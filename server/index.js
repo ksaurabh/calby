@@ -1584,6 +1584,8 @@ app.post('/api/calendar/explain', requireAuth, async (req, res) => {
       timezone: ownerTimezone(req.user.email),
       apiKey: anthropicKeyFor(req.user.email).key,
     });
+    // Stored with the report, so a cached answer still says when it was worked out.
+    report.calculatedAt = new Date().toISOString();
     cacheReport(event, commitmentTypes, report);
     res.json({ event, ...report, cached: false });
   } catch (err) {

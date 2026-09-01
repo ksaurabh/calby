@@ -15,7 +15,7 @@ export function EventExplanationReport({
   explanation: Explanation;
   timezone: string;
 }) {
-  const { event, summary, verdicts } = explanation;
+  const { event, summary, verdicts, calculatedAt, cached } = explanation;
 
   return (
     <div className="space-y-5">
@@ -42,6 +42,13 @@ export function EventExplanationReport({
       </div>
 
       {summary && <p className="text-sm text-gray-800">{summary}</p>}
+
+      {calculatedAt && (
+        <p className="text-xs text-gray-400">
+          Calculated at {formatDateTime(calculatedAt, timezone)}
+          {cached && ' · reused from that run, since neither this event nor your commitment types have changed'}
+        </p>
+      )}
 
       {verdicts.length === 0 ? (
         <p className="text-sm text-gray-600">

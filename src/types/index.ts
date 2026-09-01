@@ -138,6 +138,10 @@ export interface EventExplanation {
   event: CalendarEvent;
   summary: string;
   verdicts: CommitmentVerdict[];
+  /** When the model was actually called. Absent on reports cached before this. */
+  calculatedAt?: string | null;
+  /** True when this answer came from the cache rather than a fresh call. */
+  cached?: boolean;
 }
 
 export interface ChatMessage {
