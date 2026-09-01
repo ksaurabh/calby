@@ -13,7 +13,7 @@ import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './compone
 
 function viewFromPath(pathname: string): View {
   const seg = pathname.replace(/^\/+/, '').split('/')[0];
-  return (ALL_VIEWS as string[]).includes(seg) ? (seg as View) : 'orgs';
+  return (ALL_VIEWS as string[]).includes(seg) ? (seg as View) : 'event-types';
 }
 
 /** /book/<16-char slug> is the public booking page. */
@@ -28,8 +28,9 @@ function manageBooking(pathname: string): { token: string; mode: 'cancel' | 'res
   return match ? { mode: match[1] as 'cancel' | 'reschedule', token: match[2] } : null;
 }
 
+// Event types is the landing page, so it owns "/".
 function pathFromView(view: View): string {
-  return view === 'orgs' ? '/' : `/${view}`;
+  return view === 'event-types' ? '/' : `/${view}`;
 }
 
 function AppContent() {
@@ -76,7 +77,7 @@ function AppContent() {
 
   // Guard the admin view — platform admins and org admins may open it
   const canAdminister = isAdmin || canManageUsers;
-  const effectiveView: View = currentView === 'admin' && !canAdminister ? 'orgs' : currentView;
+  const effectiveView: View = currentView === 'admin' && !canAdminister ? 'event-types' : currentView;
 
   return (
     <Layout currentView={effectiveView} onViewChange={setCurrentView}>

@@ -10,8 +10,8 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { view: 'orgs', label: 'Organizations', icon: '▦' },
   { view: 'event-types', label: 'Event types', icon: '🗓' },
+  { view: 'orgs', label: 'Organizations', icon: '▦' },
   { view: 'commitments', label: 'Commitment types', icon: '🎨' },
   { view: 'settings', label: 'Settings', icon: '⚙' },
   { view: 'admin', label: 'Administration', icon: '🛡', managersOnly: true },
