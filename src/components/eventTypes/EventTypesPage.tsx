@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CalendarStatus, EventType, SlotDay } from '../../types';
+import type { CalendarEvent, CalendarStatus, EventType, SlotDay } from '../../types';
 import { api } from '../../utils/api';
-import { formatDayLabel, formatTime } from '../../utils/format';
 import { Button, Modal } from '../common';
+import { AvailabilityCalendar } from './AvailabilityCalendar';
 import { EventTypeForm } from './EventTypeForm';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
@@ -38,7 +38,11 @@ export function EventTypesPage() {
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<EventType | null>(null);
-  const [preview, setPreview] = useState<{ eventType: EventType; days: SlotDay[] } | null>(null);
+  const [preview, setPreview] = useState<{
+    eventType: EventType;
+    days: SlotDay[];
+    events: CalendarEvent[];
+  } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +99,13 @@ export function EventTypesPage() {
     setEditing(null);
   };
 
-  const handleSubmit = async (values: { name: string; description: string; guidance: string; timezone: string }) => {
+  const handleSubmit = async (values: {
+    name: string;
+    externalName: string;
+    description: string;
+    guidance: string;
+    timezone: string;
+  }) => {
     if (editing) {
       await api.updateEventType(editing.id, values);
     } else {
@@ -119,8 +129,8 @@ export function EventTypesPage() {
   const showPreview = async (eventType: EventType) => {
     setError(null);
     try {
-      const { days } = await api.eventTypeAvailability(eventType.id);
-      setPreview({ eventType, days });
+      const { days, events } = await api.eventTypeAvailability(eventType.id);
+      setPreview({ eventType, days, events });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -193,6 +203,11 @@ export function EventTypesPage() {
                       <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">paused</span>
                     )}
                   </div>
+                  {eventType.externalName && eventType.externalName !== eventType.name && (
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Guests see: <span className="text-gray-700">{eventType.externalName}</span>
+                    </p>
+                  )}
                   {eventType.description && (
                     <p className="text-sm text-gray-600 mt-1">{eventType.description}</p>
                   )}
@@ -254,35 +269,23 @@ export function EventTypesPage() {
       <Modal
         isOpen={!!preview}
         onClose={() => setPreview(null)}
-        title={preview ? `Open slots — ${preview.eventType.name}` : ''}
-        wide
+        title={preview ? `Availability — ${preview.eventType.name}` : ''}
+        size="full"
       >
         {preview && (
-          preview.days.length === 0 ? (
-            <p className="text-sm text-gray-600">
-              No open slots in the next {preview.eventType.rules.horizonWeeks} week(s).
-            </p>
-          ) : (
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-              {preview.days.map(day => (
-                <div key={day.date}>
-                  <div className="text-sm font-medium text-gray-900">
-                    {formatDayLabel(day.slots[0].start)}
-                  </div>
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {day.slots.map(slot => (
-                      <span
-                        key={slot.start}
-                        className="text-sm px-3 py-1 rounded-lg border border-gray-200 text-gray-700"
-                      >
-                        {formatTime(slot.start, preview.eventType.rules.timezone)}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )
+          <>
+            {preview.days.length === 0 && (
+              <p className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-4">
+                No open slots in the next {preview.eventType.rules.horizonWeeks} week(s) — your
+                calendar is full, or the guidance is narrower than you intended.
+              </p>
+            )}
+            <AvailabilityCalendar
+              days={preview.days}
+              events={preview.events}
+              rules={preview.eventType.rules}
+            />
+          </>
         )}
       </Modal>
     </div>

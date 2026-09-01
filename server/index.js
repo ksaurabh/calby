@@ -16,6 +16,7 @@ import {
   deleteEvent,
   exchangeCode,
   fetchBusy,
+  fetchEvents,
   forgetAccessToken,
   generateState,
   updateEventTime,
@@ -331,6 +332,12 @@ function eventDescription({ eventTypeName, name, email, notes, manageToken }) {
   ].filter(Boolean).join('\n');
 }
 
+// Event types carry an internal name (what the owner calls it) and an external
+// name (what guests see). Older records predate the split, so fall back.
+function externalNameOf(eventType) {
+  return eventType.externalName?.trim() || eventType.name;
+}
+
 // The public part of a booking URL: 16 random characters, unguessable, and the
 // only thing standing between a stranger and the page — so it comes from a CSPRNG.
 function generatePublicSlug() {
@@ -344,7 +351,7 @@ function generatePublicSlug() {
 // What a booking page may see. Never leaks the owner's guidance or email.
 function publicEventType(eventType, ownerName) {
   return {
-    name: eventType.name,
+    name: externalNameOf(eventType),
     description: eventType.description || '',
     ownerName,
     durationMinutes: eventType.rules.durationMinutes,
@@ -832,6 +839,7 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
     id: generateId('evt'),
     ownerEmail: req.user.email.toLowerCase(),
     name,
+    externalName: req.body.externalName?.trim() || name,
     description: req.body.description?.trim() || '',
     guidance,
     slug: generatePublicSlug(),
@@ -870,6 +878,7 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
   eventTypes[index] = {
     ...current,
     name: req.body.name?.trim() || current.name,
+    externalName: req.body.externalName?.trim() || externalNameOf(current),
     description: req.body.description?.trim() ?? current.description,
     guidance,
     active: typeof req.body.active === 'boolean' ? req.body.active : current.active,
@@ -892,15 +901,22 @@ app.delete('/api/event-types/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// The owner's own preview of what visitors would see.
+// The owner's own preview: bookable slots plus the meetings already on their
+// calendar, so the two can be seen side by side.
 app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
   const eventType = getEventTypes().find(
     e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
   );
   if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+
   try {
-    const { days } = await availabilityFor(eventType);
-    res.json({ days, rules: eventType.rules });
+    const { days, token } = await availabilityFor(eventType);
+    const now = new Date();
+    const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
+    // Event titles are the owner's own data — this route is behind requireAuth
+    // and scoped to event types they own.
+    const events = await fetchEvents(token, now, horizonEnd);
+    res.json({ days, rules: eventType.rules, events });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
   }
@@ -968,10 +984,11 @@ app.post('/api/book/:slug', async (req, res) => {
     const owner = findUser(eventType.ownerEmail);
 
     const manageToken = generateManageToken();
+    const publicName = externalNameOf(eventType);
     const event = await createEvent(token, {
-      summary: `${eventType.name} — ${name}`,
+      summary: `${publicName} — ${name}`,
       description: eventDescription({
-        eventTypeName: eventType.name,
+        eventTypeName: publicName,
         name,
         email,
         notes,
@@ -987,7 +1004,9 @@ app.post('/api/book/:slug', async (req, res) => {
       id: generateId('booking'),
       manageToken,
       eventTypeId: eventType.id,
+      // Internal name for the owner's list; external name for guest-facing pages.
       eventTypeName: eventType.name,
+      eventTypeExternalName: publicName,
       ownerEmail: eventType.ownerEmail,
       name,
       email,
@@ -1010,7 +1029,7 @@ app.post('/api/book/:slug', async (req, res) => {
         timezone: booking.timezone,
         name: booking.name,
         email: booking.email,
-        eventTypeName: eventType.name,
+        eventTypeName: publicName,
         ownerName: owner?.name || 'the host',
         cancelUrl: cancelUrl(manageToken),
         rescheduleUrl: rescheduleUrl(manageToken),
@@ -1033,7 +1052,9 @@ function bookingByToken(token) {
 
 function publicBooking(booking, eventType, ownerName) {
   return {
-    eventTypeName: booking.eventTypeName,
+    eventTypeName:
+      booking.eventTypeExternalName ||
+      (eventType ? externalNameOf(eventType) : booking.eventTypeName),
     ownerName,
     name: booking.name,
     email: booking.email,

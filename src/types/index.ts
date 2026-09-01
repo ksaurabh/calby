@@ -48,7 +48,10 @@ export interface SchedulingRules {
 export interface EventType {
   id: string;
   ownerEmail: string;
+  /** Internal name — only the owner sees this. */
   name: string;
+  /** Public name shown on the booking page and in the invite. */
+  externalName: string;
   description: string;
   /** Plain-text availability guidance, read by the scheduling agent. */
   guidance: string;
@@ -64,6 +67,7 @@ export interface EventType {
 
 export interface EventTypeInput {
   name: string;
+  externalName?: string;
   description?: string;
   guidance: string;
   active?: boolean;
@@ -80,6 +84,15 @@ export interface SlotDay {
   slots: Slot[];
 }
 
+/** An event already on the owner's calendar. Owner-only — never sent publicly. */
+export interface CalendarEvent {
+  id: string;
+  summary: string;
+  allDay: boolean;
+  start: string;
+  end: string;
+}
+
 export interface PublicEventType {
   name: string;
   description: string;
@@ -92,7 +105,9 @@ export interface PublicEventType {
 export interface Booking {
   id: string;
   eventTypeId: string;
+  /** Internal name, for the owner's own list. */
   eventTypeName: string;
+  eventTypeExternalName?: string;
   name: string;
   email: string;
   notes: string;

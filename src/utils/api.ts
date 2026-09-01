@@ -1,5 +1,6 @@
 import type {
   Booking,
+  CalendarEvent,
   CalendarStatus,
   EventType,
   EventTypeInput,
@@ -8,6 +9,7 @@ import type {
   OrgInput,
   PublicEventType,
   Role,
+  SchedulingRules,
   SlotDay,
   User,
 } from '../types';
@@ -59,7 +61,9 @@ export const api = {
     request<{ success: boolean }>(`/api/event-types/${id}`, { method: 'DELETE' }),
 
   eventTypeAvailability: (id: string) =>
-    request<{ days: SlotDay[] }>(`/api/event-types/${id}/availability`),
+    request<{ days: SlotDay[]; rules: SchedulingRules; events: CalendarEvent[] }>(
+      `/api/event-types/${id}/availability`
+    ),
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 

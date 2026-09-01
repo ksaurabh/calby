@@ -28,12 +28,19 @@ English, and share a booking link that writes real invites to your calendar.
   pre-registers the account — they still authenticate with Google, and their
   domain must be allowed for sign-in to work. Removing a user releases any org
   they administered, which the next matching sign-in then claims.
-- **Event types.** An event type is a name plus *plain-text guidance* — "30
+- **Event types.** An event type has an **internal name** (what you call it —
+  "Inbound lead — 30m") and an **external name** shown to whoever books
+  ("Chat with Kumar"), plus *plain-text guidance* — "30
   minute intro calls, weekdays 9am–5pm, next 2 weeks". On save, the agent reads
   the guidance and derives concrete rules (duration, days, hours, timezone,
   horizon, notice, buffer, per-day cap), which the UI shows back to you so you
   can check the reading. Slot generation itself is deterministic, so booking
   pages never wait on a model call.
+- **Availability preview.** "Preview slots" opens a week calendar in the event
+  type's timezone showing your existing meetings (grey, with titles) alongside
+  what the guidance opened up (green), so you can see the two together before
+  sharing the link. All-day events get their own row; the grid widens
+  automatically to include meetings outside the bookable window.
 - **Booking links.** Every event type gets a URL containing a 16-character
   random slug (`/book/rTnmGfNGS3sL6tRP`), generated with a CSPRNG. The page is
   public — no sign-in — and shows only the event name, host display name,

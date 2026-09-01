@@ -5,7 +5,13 @@ import { Button } from '../common';
 
 interface EventTypeFormProps {
   eventType?: EventType;
-  onSubmit: (values: { name: string; description: string; guidance: string; timezone: string }) => Promise<void>;
+  onSubmit: (values: {
+    name: string;
+    externalName: string;
+    description: string;
+    guidance: string;
+    timezone: string;
+  }) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -20,6 +26,7 @@ const EXAMPLES = [
 
 export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormProps) {
   const [name, setName] = useState(eventType?.name || '');
+  const [externalName, setExternalName] = useState(eventType?.externalName || '');
   const [description, setDescription] = useState(eventType?.description || '');
   const [guidance, setGuidance] = useState(eventType?.guidance || '');
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +39,8 @@ export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormPr
     try {
       await onSubmit({
         name: name.trim(),
+        // Blank external name means "same as internal".
+        externalName: externalName.trim() || name.trim(),
         description: description.trim(),
         guidance: guidance.trim(),
         timezone: eventType?.rules.timezone || browserTimezone(),
@@ -47,15 +56,33 @@ export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormPr
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Internal name <span className="text-gray-400 font-normal">(only you see this)</span>
+        </label>
         <input
           className={inputClass}
           value={name}
           onChange={e => setName(e.target.value)}
-          placeholder="Intro call"
+          placeholder="Inbound lead — 30m"
           required
           autoFocus
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          External name <span className="text-gray-400 font-normal">(shown to whoever books)</span>
+        </label>
+        <input
+          className={inputClass}
+          value={externalName}
+          onChange={e => setExternalName(e.target.value)}
+          placeholder={name.trim() || 'Intro call'}
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Appears on the booking page and in the calendar invite. Leave blank to use
+          the internal name.
+        </p>
       </div>
 
       <div>

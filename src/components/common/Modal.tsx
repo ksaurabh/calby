@@ -1,14 +1,23 @@
 import type { ReactNode } from 'react';
 
+type ModalSize = 'default' | 'wide' | 'full';
+
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
-  wide?: boolean;
+  size?: ModalSize;
 }
 
-export function Modal({ isOpen, onClose, title, children, wide }: ModalProps) {
+const sizeClasses: Record<ModalSize, string> = {
+  default: 'max-w-lg',
+  wide: 'max-w-3xl',
+  // Wide enough for a seven-day calendar grid.
+  full: 'max-w-6xl',
+};
+
+export function Modal({ isOpen, onClose, title, children, size = 'default' }: ModalProps) {
   if (!isOpen) return null;
 
   return (
@@ -17,7 +26,7 @@ export function Modal({ isOpen, onClose, title, children, wide }: ModalProps) {
       onClick={onClose}
     >
       <div
-        className={`bg-white rounded-xl shadow-xl w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} max-h-[90vh] overflow-y-auto`}
+        className={`bg-white rounded-xl shadow-xl w-full ${sizeClasses[size]} max-h-[90vh] overflow-y-auto`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 sticky top-0 bg-white">

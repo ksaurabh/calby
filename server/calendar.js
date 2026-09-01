@@ -131,6 +131,30 @@ export async function fetchBusy(token, timeMin, timeMax) {
   return busy.map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
 }
 
+// The owner's actual events in a window — titles included, for their own
+// availability preview. The public booking page never sees these.
+export async function fetchEvents(token, timeMin, timeMax) {
+  const params = new URLSearchParams({
+    timeMin: timeMin.toISOString(),
+    timeMax: timeMax.toISOString(),
+    singleEvents: 'true',      // expand recurring events into instances
+    orderBy: 'startTime',
+    maxResults: '250',
+  });
+  const data = await calendarFetch(token, `/calendars/primary/events?${params}`);
+  return (data.items || [])
+    .filter(e => e.status !== 'cancelled')
+    .map(e => ({
+      id: e.id,
+      summary: e.summary || '(no title)',
+      // All-day events carry `date` instead of `dateTime`.
+      allDay: !e.start?.dateTime,
+      start: e.start?.dateTime || e.start?.date || null,
+      end: e.end?.dateTime || e.end?.date || null,
+    }))
+    .filter(e => e.start && e.end);
+}
+
 // Move an existing meeting. sendUpdates=all re-notifies both parties.
 export async function updateEventTime(token, eventId, { start, end, timeZone }) {
   return calendarFetch(token, `/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
