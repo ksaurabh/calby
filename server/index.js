@@ -26,7 +26,7 @@ import {
   interpretGuidance,
   slotIsAvailable,
 } from './scheduling.js';
-import { cacheReport, cachedReport, classifyEvents } from './classify.js';
+import { cacheReport, cachedReport, classifyEvents, splitCached } from './classify.js';
 import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 
@@ -1418,18 +1418,117 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   return { events, commitmentTypes, assignments, stats };
 }
 
+// Background classification jobs. The calendar paints from cache immediately;
+// anything still unjudged is worked through here so the page can report
+// progress instead of waiting on a model call.
+const classificationJobs = new Map();
+const JOB_TTL = 10 * 60 * 1000;
+
+function reapJobs() {
+  const cutoff = Date.now() - JOB_TTL;
+  for (const [id, job] of classificationJobs) {
+    if (job.updatedAt < cutoff) classificationJobs.delete(id);
+  }
+}
+
+app.post('/api/calendar/classify', requireAuth, async (req, res) => {
+  reapJobs();
+  const { from, to } = calendarWindow(req.body);
+
+  let events;
+  let commitmentTypes;
+  try {
+    const calendar = calendarFor(req.user.email);
+    if (!calendar?.refreshToken) return res.status(409).json({ error: 'Connect your Google Calendar first.' });
+    const token = await accessTokenFor(req.user.email, calendar.refreshToken);
+    events = await fetchEvents(token, from, to);
+    commitmentTypes = getCommitmentTypes(req.user.email);
+  } catch (err) {
+    return res.status(err.status || 502).json({ error: err.message });
+  }
+
+  const { pending } = splitCached(events, commitmentTypes);
+  if (!pending.length) {
+    return res.json({ jobId: null, total: 0, done: 0, finished: true, assignments: {} });
+  }
+
+  const jobId = generateId('job');
+  const job = {
+    ownerEmail: req.user.email.toLowerCase(),
+    total: pending.length,
+    done: 0,
+    assignments: {},
+    finished: false,
+    error: null,
+    updatedAt: Date.now(),
+  };
+  classificationJobs.set(jobId, job);
+
+  // Runs past this response; the client polls /api/calendar/classify/:jobId.
+  (async () => {
+    try {
+      const { assignments } = await classifyEvents(events, commitmentTypes, {
+        apiKey: anthropicKeyFor(req.user.email).key,
+        // The accumulated map is handed in: referring to the awaited result
+        // from here would hit it before it is assigned.
+        onProgress: (done, _total, assignments) => {
+          job.done = done;
+          job.assignments = Object.fromEntries(assignments);
+          job.updatedAt = Date.now();
+        },
+      });
+      job.assignments = Object.fromEntries(assignments);
+      job.done = job.total;
+    } catch (err) {
+      console.error('[classify] job failed:', err.message);
+      job.error = err.message;
+    } finally {
+      job.finished = true;
+      job.updatedAt = Date.now();
+    }
+  })();
+
+  res.json({ jobId, total: job.total, done: 0, finished: false, assignments: {} });
+});
+
+app.get('/api/calendar/classify/:jobId', requireAuth, (req, res) => {
+  const job = classificationJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'That classification job has expired.' });
+  if (job.ownerEmail !== req.user.email.toLowerCase()) {
+    return res.status(403).json({ error: 'Not your job' });
+  }
+  res.json({
+    total: job.total,
+    done: job.done,
+    finished: job.finished,
+    error: job.error,
+    assignments: job.assignments,
+  });
+});
+
 app.get('/api/calendar/events', requireAuth, async (req, res) => {
   const { from, to } = calendarWindow(req.query);
   try {
-    const { events, commitmentTypes, assignments, stats } = await ownerEvents(req, { from, to });
+    const calendar = calendarFor(req.user.email);
+    if (!calendar?.refreshToken) {
+      return res.status(409).json({ error: 'Connect your Google Calendar first.' });
+    }
+    const token = await accessTokenFor(req.user.email, calendar.refreshToken);
+    const events = await fetchEvents(token, from, to);
+    const commitmentTypes = getCommitmentTypes(req.user.email);
+
+    // Colour from the cache only — no model call — so the calendar renders
+    // immediately. Anything still unjudged is reported as pending, and the
+    // client starts a classification job for it.
+    const { assignments, pending } = splitCached(events, commitmentTypes);
+
     res.json({
       events: events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
       commitmentTypes,
       timezone: ownerTimezone(req.user.email),
       from: from.toISOString(),
       to: to.toISOString(),
-      // How many colours came from cache vs a fresh model call.
-      classification: stats,
+      classification: { cached: events.length - pending.length, pending: pending.length },
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });

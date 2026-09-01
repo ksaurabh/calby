@@ -20,6 +20,9 @@ const CACHE_FILE = join(dirname(fileURLToPath(import.meta.url)), 'classification
 // Plenty for years of one person's calendar; bounded so the file cannot grow
 // without limit as events and conditions change.
 const MAX_ENTRIES = 20000;
+// Small enough that progress moves visibly, large enough that the model sees a
+// batch's worth of context per call.
+const BATCH_SIZE = 15;
 
 const SYSTEM_PROMPT = `You label calendar entries against a person's commitment types.
 Each commitment type has a name and a plain-language condition describing which
@@ -208,29 +211,55 @@ function describe(event, index) {
 }
 
 /**
- * Map of event id -> commitment type id. Events with no match are absent.
- * Also reports how many verdicts came from cache, for the caller to surface.
+ * Split events into those already judged and those still needing a verdict.
+ * Lets a caller paint the calendar from cache before any model call is made.
  */
-export async function classifyEvents(events, commitmentTypes, { apiKey } = {}) {
-  const stats = { cached: 0, fresh: 0 };
-  if (!events.length || !commitmentTypes.length) return { assignments: new Map(), stats };
+export function splitCached(events, commitmentTypes) {
+  const assignments = new Map();
+  if (!commitmentTypes.length) return { assignments, pending: [] };
 
   const version = typesFingerprint(commitmentTypes);
-  const validIds = new Set(commitmentTypes.map(t => t.id));
-  const assignments = new Map();
-
-  const unresolved = [];
+  const pending = [];
   for (const event of events) {
     const cached = cacheGet(cacheKey('type', version, event));
     if (cached !== undefined) {
-      stats.cached++;
       if (cached) assignments.set(event.id, cached);
     } else {
-      unresolved.push(event);
+      pending.push(event);
     }
   }
-  if (!unresolved.length) return { assignments, stats };
-  stats.fresh = unresolved.length;
+  return { assignments, pending };
+}
+
+/**
+ * Map of event id -> commitment type id. Events with no match are absent.
+ * Reports how many verdicts came from cache, and calls
+ * `onProgress(done, total, assignments)` after each batch so a caller can report
+ * progress — and paint the colours already decided — while the rest runs.
+ */
+export async function classifyEvents(events, commitmentTypes, { apiKey, onProgress } = {}) {
+  const stats = { cached: 0, fresh: 0 };
+  if (!events.length || !commitmentTypes.length) return { assignments: new Map(), stats };
+
+  const { assignments, pending } = splitCached(events, commitmentTypes);
+  stats.cached = events.length - pending.length;
+  stats.fresh = pending.length;
+  if (!pending.length) return { assignments, stats };
+
+  // Work in batches so progress is visible and one failure costs one batch.
+  let done = 0;
+  for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+    const batch = pending.slice(i, i + BATCH_SIZE);
+    await classifyBatch(batch, commitmentTypes, apiKey, assignments);
+    done += batch.length;
+    onProgress?.(done, pending.length, assignments);
+  }
+  return { assignments, stats };
+}
+
+async function classifyBatch(unresolved, commitmentTypes, apiKey, assignments) {
+  const version = typesFingerprint(commitmentTypes);
+  const validIds = new Set(commitmentTypes.map(t => t.id));
 
   const applyFallback = () => {
     const keyword = classifyByKeyword(unresolved, commitmentTypes);
@@ -239,7 +268,7 @@ export async function classifyEvents(events, commitmentTypes, { apiKey } = {}) {
       cacheSet(cacheKey('type', version, event), typeId);
       if (typeId) assignments.set(event.id, typeId);
     }
-    return { assignments, stats };
+    return assignments;
   };
 
   if (!apiKey) return applyFallback();
@@ -285,7 +314,7 @@ export async function classifyEvents(events, commitmentTypes, { apiKey } = {}) {
     unresolved.forEach((event, i) => {
       if (!seen.has(i)) cacheSet(cacheKey('type', version, event), '');
     });
-    return { assignments, stats };
+    return assignments;
   } catch (err) {
     console.error('[classify] falling back to keywords:', err.message);
     return applyFallback();

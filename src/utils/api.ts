@@ -60,8 +60,26 @@ export const api = {
       timezone: string;
       from: string;
       to: string;
-      classification: { cached: number; fresh: number };
+      classification: { cached: number; pending: number };
     }>('/api/calendar/events'),
+
+  startClassification: () =>
+    request<{
+      jobId: string | null;
+      total: number;
+      done: number;
+      finished: boolean;
+      assignments: Record<string, string>;
+    }>('/api/calendar/classify', { method: 'POST', body: JSON.stringify({}) }),
+
+  classificationProgress: (jobId: string) =>
+    request<{
+      total: number;
+      done: number;
+      finished: boolean;
+      error: string | null;
+      assignments: Record<string, string>;
+    }>(`/api/calendar/classify/${jobId}`),
 
   askCalendar: (question: string, history: ChatMessage[]) =>
     request<{ answer: string; eventsConsidered: number; timezone: string }>('/api/calendar/ask', {

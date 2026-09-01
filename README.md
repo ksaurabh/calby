@@ -69,6 +69,11 @@ English, and share a booking link that writes real invites to your calendar.
   with whichever condition it satisfies and the calendar colour-codes
   accordingly, with a legend; unmatched entries stay grey. Without an API key the
   labelling falls back to keyword overlap.
+- **Instant paint.** The calendar renders as soon as Google returns, coloured
+  from whatever is already cached. Anything still unjudged is classified in the
+  background in batches of 15, with a banner above the grid reading
+  *"Calculating commitment types of events — N out of K done"*; colours land as
+  each batch finishes.
 - **Cached verdicts.** Every colour and every per-event report is cached on disk
   under a fingerprint of the event (title, time, organizer, guests, location,
   recurrence) *and* the set of commitment conditions. An unchanged calendar
@@ -157,7 +162,9 @@ All routes require an authenticated session on an allowed domain.
 | DELETE | `/api/event-types/:id` | owner | Delete one |
 | GET | `/api/event-types/:id/availability` | owner | Preview your open slots |
 | GET | `/api/bookings` | user | Bookings taken on your event types |
-| GET | `/api/calendar/events` | user | Your entries, labelled by commitment type |
+| GET | `/api/calendar/events` | user | Your entries, coloured from cache (no model call) |
+| POST | `/api/calendar/classify` | user | Start background classification of the rest |
+| GET | `/api/calendar/classify/:jobId` | owner | Progress and colours so far |
 | POST | `/api/calendar/ask` | user | Ask a question about your calendar |
 | POST | `/api/calendar/explain` | user | Report one entry against every type |
 | GET | `/api/commitment-types` | user | List your commitment types + palette |

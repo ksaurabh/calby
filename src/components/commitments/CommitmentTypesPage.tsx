@@ -35,7 +35,7 @@ export function CommitmentTypesPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [timezone, setTimezone] = useState('UTC');
   const [calendarError, setCalendarError] = useState<string | null>(null);
-  const [classification, setClassification] = useState<{ cached: number; fresh: number } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [explaining, setExplaining] = useState<CalendarEvent | null>(null);
   const [explanation, setExplanation] = useState<EventExplanation | null>(null);
@@ -44,14 +44,49 @@ export function CommitmentTypesPage() {
   const loadCalendar = useCallback(async () => {
     setCalendarLoading(true);
     try {
+      // Paints straight away: entries already judged come back coloured, the
+      // rest are classified in the background below.
       const data = await api.calendarEvents();
       setEvents(data.events);
       setTimezone(data.timezone);
-      setClassification(data.classification);
       setCalendarError(null);
+      setCalendarLoading(false);
+
+      if (data.classification.pending === 0) {
+        setProgress(null);
+        return;
+      }
+
+      const job = await api.startClassification();
+      if (!job.jobId) {
+        setProgress(null);
+        return;
+      }
+      setProgress({ done: 0, total: job.total });
+
+      // Poll until the job reports finished, folding in colours as they land.
+      const applyAssignments = (assignments: Record<string, string>) => {
+        setEvents(current =>
+          current.map(e =>
+            assignments[e.id] ? { ...e, commitmentTypeId: assignments[e.id] } : e
+          )
+        );
+      };
+
+      for (;;) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        const status = await api.classificationProgress(job.jobId);
+        applyAssignments(status.assignments);
+        setProgress({ done: status.done, total: status.total });
+        if (status.finished) {
+          if (status.error) setCalendarError(status.error);
+          setProgress(null);
+          break;
+        }
+      }
     } catch (e) {
       setCalendarError((e as Error).message);
-    } finally {
+      setProgress(null);
       setCalendarLoading(false);
     }
   }, []);
@@ -204,13 +239,7 @@ export function CommitmentTypesPage() {
                 Coloured by commitment type. Click an entry for a report on how it scores
                 against every type.
               </p>
-              {classification && (
-                <p className="text-xs text-gray-400 mt-1">
-                  {classification.fresh === 0
-                    ? `${classification.cached} entries coloured from cache — no model calls.`
-                    : `${classification.fresh} newly judged, ${classification.cached} from cache.`}
-                </p>
-              )}
+
             </div>
             <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
           </div>
@@ -220,12 +249,28 @@ export function CommitmentTypesPage() {
           ) : calendarLoading ? (
             <div className="py-10 text-center text-gray-500">Loading your calendar…</div>
           ) : (
+            <>
+            {progress && (
+              <div className="mb-3 rounded-lg bg-blue-50 text-blue-800 px-4 py-2.5 text-sm flex items-center gap-3">
+                <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 shrink-0" />
+                <span>
+                  Calculating commitment types of events — {progress.done} out of {progress.total} done
+                </span>
+                <span className="flex-1 h-1.5 bg-blue-100 rounded-full overflow-hidden min-w-16">
+                  <span
+                    className="block h-full bg-blue-500 transition-all duration-300"
+                    style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }}
+                  />
+                </span>
+              </div>
+            )}
             <AvailabilityCalendar
               events={events}
               commitmentTypes={commitmentTypes}
               window={{ timezone, startMinute: 8 * 60, endMinute: 19 * 60, weeks: 4 }}
               onSelectEvent={explainEvent}
             />
+            </>
           )}
         </div>
 
