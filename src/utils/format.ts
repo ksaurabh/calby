@@ -35,6 +35,19 @@ export function formatDateTime(iso: string, timeZone?: string): string {
   });
 }
 
+/** Like formatDateTime, but to the second — for "when did this actually run". */
+export function formatTimestamp(iso: string, timeZone?: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone,
+  });
+}
+
 /** The viewer's IANA timezone, e.g. "America/New_York". */
 export function browserTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone;

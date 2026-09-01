@@ -1,5 +1,5 @@
 import type { EventExplanation as Explanation } from '../../types';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime, formatTimestamp } from '../../utils/format';
 
 const CONFIDENCE_LABEL: Record<string, string> = {
   high: 'high confidence',
@@ -45,7 +45,7 @@ export function EventExplanationReport({
 
       {calculatedAt && (
         <p className="text-xs text-gray-400">
-          Calculated at {formatDateTime(calculatedAt, timezone)}
+          Calculated at {formatTimestamp(calculatedAt, timezone)}
           {cached && ' · reused from that run, since neither this event nor your commitment types have changed'}
         </p>
       )}
