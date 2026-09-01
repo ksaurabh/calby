@@ -23,6 +23,7 @@ import {
 } from './calendar.js';
 import {
   applyBookOver,
+  diagnoseSlot,
   generateSlots,
   interpretGuidance,
   reviewSlots,
@@ -38,7 +39,7 @@ import {
   fingerprintOf,
   splitCached,
 } from './classify.js';
-import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
+import { askCalendar, buildCalendarContext, explainEventMatch, explainSlot } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -507,7 +508,12 @@ async function availabilityFor(
   }
 
   const days = generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes });
-  if (!apiKey || !days.length) return { days, token, reviewNote: null, drops: [] };
+  // Everything the slot diagnosis needs, so an explanation can never disagree
+  // with the slots that were actually generated.
+  const context = { busy, events, assignments, commitmentTypes, takenStarts, now };
+  if (!apiKey || !days.length) {
+    return { days, token, reviewNote: null, drops: [], ...context };
+  }
 
   // Same inputs, same answer — so the whole thing is cached under one key that
   // covers the guidance, the slots on offer, and the classified commitments.
@@ -531,9 +537,10 @@ async function availabilityFor(
       token,
       reviewNote: cached.note,
       drops: cached.drops,
+      ...context,
     };
   }
-  if (review !== 'compute') return { days, token, reviewNote: null, drops: [] };
+  if (review !== 'compute') return { days, token, reviewNote: null, drops: [], ...context };
 
   const result = await reviewSlots({
     guidance: eventType.guidance,
@@ -548,7 +555,7 @@ async function availabilityFor(
   if (result.reviewed) {
     cacheSlotReview(cacheKey, { drops: result.drops, note: result.note });
   }
-  return { days: result.days, token, reviewNote: result.note, drops: result.drops };
+  return { days: result.days, token, reviewNote: result.note, drops: result.drops, ...context };
 }
 
 // ---------------------------------------------------------------------------
@@ -1196,6 +1203,64 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
       drops,
     });
   } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Why a given time is, or isn't, offered on this event type's booking page.
+app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) => {
+  const eventType = getEventTypes().find(
+    e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+
+  const start = req.body.start;
+  if (!start || Number.isNaN(Date.parse(start))) {
+    return res.status(400).json({ error: 'Pick a time' });
+  }
+  const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
+  const dayKeyIn = (value) => new Intl.DateTimeFormat('en-CA', {
+    timeZone: eventType.rules.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(value));
+
+  try {
+    // Reuse exactly what the availability computation saw.
+    const availability = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
+    const dayKey = dayKeyIn(start);
+    const bookingsThatDay = (availability.takenStarts || [])
+      .filter(t => dayKeyIn(t) === dayKey).length;
+
+    const diagnosis = diagnoseSlot({
+      rules: eventType.rules,
+      start,
+      durationMinutes,
+      busy: availability.busy || [],
+      events: availability.events || [],
+      assignments: availability.assignments || new Map(),
+      commitmentTypes: availability.commitmentTypes || [],
+      bookOver: eventType.bookOverCommitmentTypeIds || [],
+      takenStarts: availability.takenStarts || [],
+      drops: availability.drops || [],
+      bookingsThatDay,
+      now: availability.now || new Date(),
+    });
+
+    const key = anthropicKeyFor(req.user.email);
+    const explanation = await explainSlot({
+      diagnosis,
+      eventType,
+      start,
+      timezone: eventType.rules.timezone,
+      apiKey: key.key,
+      email: req.user.email,
+      keySource: key.source,
+    });
+
+    res.json({ start, durationMinutes, ...diagnosis, explanation, explained: !!key.key });
+  } catch (err) {
+    console.error('[slot-explanation] failed:', err.message);
     res.status(err.status || 502).json({ error: err.message });
   }
 });

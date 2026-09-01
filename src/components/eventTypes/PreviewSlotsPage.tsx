@@ -25,6 +25,14 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [daysPerPage, setDaysPerPage] = useState(2);
+  // "Why isn't this time open?" — a click on any time in an open-slots column.
+  const [asking, setAsking] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<{
+    open: boolean;
+    reasons: { code: string; detail: string }[];
+    explanation: string;
+  } | null>(null);
+  const [answerError, setAnswerError] = useState<string | null>(null);
   const [pageOffset, setPageOffset] = useState(0);
 
   const load = useCallback(async (durationMinutes?: number) => {
@@ -52,6 +60,22 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   }, [load]);
 
   const back = () => navigate('/');
+
+  const askAboutTime = async (startIso: string) => {
+    setAsking(startIso);
+    setAnswer(null);
+    setAnswerError(null);
+    try {
+      const result = await api.explainSlot(
+        eventTypeId,
+        startIso,
+        availability?.durationMinutes || 30
+      );
+      setAnswer(result);
+    } catch (e) {
+      setAnswerError((e as Error).message);
+    }
+  };
 
   const header = (
     <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
@@ -174,8 +198,63 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
           days={availability.days}
           commitmentTypes={availability.commitmentTypes}
           paired
+          onPickTime={askAboutTime}
+          snapMinutes={eventType.rules.slotIntervalMinutes}
+          selectedTime={asking}
         />
+        <p className="text-xs text-gray-500 mt-2">
+          Click any time in an <span className="text-emerald-700">Open slots</span> column —
+          including empty space — to ask why it is or isn't offered.
+        </p>
       </div>
+
+      {asking && (
+        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-medium text-gray-900">
+                {formatDateTime(asking, eventType.rules.timezone)}
+              </h2>
+              <p className="text-xs text-gray-500 mt-0.5">{eventType.rules.timezone}</p>
+            </div>
+            <button
+              onClick={() => { setAsking(null); setAnswer(null); setAnswerError(null); }}
+              className="text-sm text-gray-500 hover:text-gray-800"
+            >
+              Close
+            </button>
+          </div>
+
+          {answerError ? (
+            <div className="mt-3 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>
+          ) : !answer ? (
+            <div className="mt-4 flex items-center gap-3 text-sm text-gray-500">
+              <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
+              Working out why…
+            </div>
+          ) : (
+            <>
+              <div className="mt-3 flex items-center gap-2">
+                <span
+                  className={`text-xs px-2 py-0.5 rounded-full ${
+                    answer.open ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
+                  }`}
+                >
+                  {answer.open ? 'Bookable' : 'Not offered'}
+                </span>
+              </div>
+              <p className="mt-3 text-sm text-gray-800">{answer.explanation}</p>
+              {answer.reasons.length > 0 && (
+                <ul className="mt-3 space-y-1 text-xs text-gray-500">
+                  {answer.reasons.map((reason, index) => (
+                    <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

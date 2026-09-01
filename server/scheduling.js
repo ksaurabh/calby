@@ -368,6 +368,126 @@ export function slotIsAvailable(startIso, days) {
   return days.some(d => d.slots.some(s => s.start === startIso));
 }
 
+/**
+ * Why a particular time is or isn't offered. Every check is deterministic and
+ * mirrors generateSlots, so the answer is always the true reason — the model is
+ * only ever asked to phrase it, never to work it out.
+ */
+export function diagnoseSlot({
+  rules,
+  start,
+  durationMinutes,
+  busy = [],
+  events = [],
+  assignments = new Map(),
+  commitmentTypes = [],
+  bookOver = [],
+  takenStarts = [],
+  drops = [],
+  bookingsThatDay = 0,
+  now = new Date(),
+}) {
+  const duration = durationMinutes || rules.durationMinutes;
+  const startDate = new Date(start);
+  const endDate = new Date(startDate.getTime() + duration * 60_000);
+  const tz = rules.timezone;
+  const { weekday, isoDate } = zonedParts(startDate, tz);
+  const minute = (() => {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit',
+    }).formatToParts(startDate).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+    return Number(parts.hour) % 24 * 60 + Number(parts.minute);
+  })();
+
+  const reasons = [];
+  const typeName = id => commitmentTypes.find(t => t.id === id)?.name || null;
+
+  if (!rules.weekdays.includes(weekday)) {
+    reasons.push({
+      code: 'outside-days',
+      detail: `${['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][weekday]} is not one of the days this event type offers.`,
+    });
+  }
+  if (minute < rules.startMinute || minute + duration > rules.endMinute) {
+    reasons.push({
+      code: 'outside-hours',
+      detail: `A ${duration} minute meeting starting then falls outside the bookable window for this event type.`,
+    });
+  }
+  if ((minute - rules.startMinute) % rules.slotIntervalMinutes !== 0) {
+    reasons.push({
+      code: 'off-grid',
+      detail: `Slots start every ${rules.slotIntervalMinutes} minutes from the start of the window, and this time isn't on that grid.`,
+    });
+  }
+  if (startDate < new Date(now.getTime() + rules.minNoticeHours * 3600_000)) {
+    reasons.push({
+      code: 'too-soon',
+      detail: rules.minNoticeHours
+        ? `It is inside the ${rules.minNoticeHours} hour notice period.`
+        : 'It is in the past.',
+    });
+  }
+  if (startDate > new Date(now.getTime() + rules.horizonWeeks * 7 * 86400_000)) {
+    reasons.push({
+      code: 'past-horizon',
+      detail: `It is beyond the ${rules.horizonWeeks} week booking horizon.`,
+    });
+  }
+  if (takenStarts.some(t => new Date(t).getTime() === startDate.getTime())) {
+    reasons.push({ code: 'already-booked', detail: 'Someone has already booked this exact slot.' });
+  }
+  if (rules.maxPerDay && bookingsThatDay >= rules.maxPerDay) {
+    reasons.push({
+      code: 'max-per-day',
+      detail: `This event type offers at most ${rules.maxPerDay} slots a day and that day is full.`,
+    });
+  }
+
+  // Calendar conflicts, named — including the buffer, and whether the entry
+  // would have been overridable.
+  const guardStart = new Date(startDate.getTime() - rules.bufferMinutes * 60_000);
+  const guardEnd = new Date(endDate.getTime() + rules.bufferMinutes * 60_000);
+  const conflicts = events.filter(e =>
+    !e.allDay && overlaps(guardStart, guardEnd, new Date(e.start), new Date(e.end))
+  );
+  for (const event of conflicts) {
+    const typeId = assignments.get(event.id);
+    const overridable = typeId && bookOver.includes(typeId);
+    if (overridable) continue; // this one was already booked over
+    const direct = overlaps(startDate, endDate, new Date(event.start), new Date(event.end));
+    reasons.push({
+      code: direct ? 'conflict' : 'buffer-conflict',
+      detail: direct
+        ? `"${event.summary}" is on your calendar then${typeName(typeId) ? ` (${typeName(typeId)})` : ''}.`
+        : `"${event.summary}" is close enough that the ${rules.bufferMinutes} minute buffer around it covers this time.`,
+      event: { summary: event.summary, start: event.start, end: event.end, commitmentType: typeName(typeId) },
+    });
+  }
+
+  // Busy time with no matching event — another calendar, or an entry we can't see.
+  if (!conflicts.length && busy.some(b => overlaps(guardStart, guardEnd, b.start, b.end))) {
+    reasons.push({
+      code: 'busy',
+      detail: 'Your calendar reports you as busy then, though no event title was available.',
+    });
+  }
+
+  const dropped = drops.find(d => new Date(d.start).getTime() === startDate.getTime());
+  if (dropped) {
+    reasons.push({
+      code: 'dropped-by-review',
+      detail: `The commitment-aware review removed it: ${dropped.reason}`,
+    });
+  }
+
+  return {
+    open: reasons.length === 0,
+    reasons,
+    context: { date: isoDate, durationMinutes: duration, timezone: tz },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Commitment-aware slot review
 // ---------------------------------------------------------------------------

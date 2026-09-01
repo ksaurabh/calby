@@ -40,6 +40,36 @@ export function dateKeyRange(timeZone: string, offsetDays: number, count: number
   return keys;
 }
 
+/** Offset between a timezone and UTC at an instant, in milliseconds. */
+function tzOffsetMs(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(date).reduce<Record<string, string>>((acc, p) => {
+    acc[p.type] = p.value;
+    return acc;
+  }, {});
+  const asUtc = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)
+  );
+  return asUtc - date.getTime();
+}
+
+/**
+ * The instant at which a local wall-clock time occurs in a timezone — the
+ * inverse of minutesInZone. Two passes settle DST transitions.
+ */
+export function zonedTimeToUtc(dateKey: string, minutes: number, timeZone: string): Date {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const guess = Date.UTC(year, month - 1, day, 0, minutes);
+  let ts = guess - tzOffsetMs(new Date(guess), timeZone);
+  ts = guess - tzOffsetMs(new Date(ts), timeZone);
+  return new Date(ts);
+}
+
 /** "Mon 12 Jan" style column header for a date key. */
 export function labelForDateKey(key: string): { weekday: string; day: string } {
   // Parse as local noon so the label never slips a day across timezones.

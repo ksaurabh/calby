@@ -159,6 +159,19 @@ export const api = {
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
+  explainSlot: (eventTypeId: string, start: string, durationMinutes: number) =>
+    request<{
+      start: string;
+      durationMinutes: number;
+      open: boolean;
+      reasons: { code: string; detail: string }[];
+      explanation: string;
+      explained: boolean;
+    }>(`/api/event-types/${eventTypeId}/slot-explanation`, {
+      method: 'POST',
+      body: JSON.stringify({ start, durationMinutes }),
+    }),
+
   // Public booking page (no authentication)
   bookingPage: (slug: string, durationMinutes?: number) =>
     request<{ eventType: PublicEventType; days: SlotDay[] }>(

@@ -198,6 +198,64 @@ export async function explainEventMatch({ event, commitmentTypes, timezone, apiK
   };
 }
 
+const SLOT_SYSTEM = `You explain to someone why a particular time on their own
+booking page is, or is not, offered to visitors.
+
+You are given the true reasons, already worked out from their rules and calendar.
+Your job is only to say them back clearly — never to re-derive them, add reasons
+that aren't listed, or speculate.
+
+Write two or three sentences, in plain language, addressed to the person whose
+calendar it is ("you"). Lead with the main reason. When a calendar entry is
+involved, name it. If the reasons list is empty, say plainly that the time is
+open and bookable. Where it is useful, mention what they could change — a wider
+window, a shorter notice period, allowing this commitment type to be booked over
+— but only when the listed reasons support it.`;
+
+/**
+ * Turn a slot diagnosis into a sentence or two. The reasons are authoritative;
+ * this only phrases them. Falls back to the plain reason list without a key.
+ */
+export async function explainSlot({ diagnosis, eventType, start, timezone, apiKey, email, keySource }) {
+  const when = new Date(start).toLocaleString('en-US', {
+    timeZone: timezone,
+    weekday: 'long', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+
+  if (!apiKey) {
+    return diagnosis.open
+      ? `${when} is open — visitors can book it.`
+      : `${when} is not offered. ${diagnosis.reasons.map(r => r.detail).join(' ')}`;
+  }
+
+  const response = await callClaude({
+    model: 'claude-opus-5',
+    max_tokens: 1000,
+    system: SLOT_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: [
+        `Event type: "${eventType.name}" — ${diagnosis.context.durationMinutes} minute meetings.`,
+        `Their availability guidance, verbatim: ${JSON.stringify(eventType.guidance)}`,
+        `The time in question: ${when} (${timezone}).`,
+        '',
+        diagnosis.open
+          ? 'This time IS offered to visitors. Nothing is blocking it.'
+          : `This time is NOT offered. The reasons, which are authoritative:\n${
+              diagnosis.reasons.map(r => `- [${r.code}] ${r.detail}`).join('\n')
+            }`,
+      ].join('\n'),
+    }],
+  }, { apiKey, email, keySource, feature: 'slot-explanation' });
+
+  return response.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+    .trim();
+}
+
 /**
  * Answer a question about the calendar. `history` is prior turns as
  * [{ role: 'user' | 'assistant', content }]. Returns the answer text.

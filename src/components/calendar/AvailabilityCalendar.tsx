@@ -7,6 +7,7 @@ import {
   minuteLabel,
   minutesInZone,
   todayKeyInZone,
+  zonedTimeToUtc,
 } from '../../utils/calendar';
 import { Button } from '../common';
 
@@ -57,6 +58,14 @@ interface AvailabilityCalendarProps {
    * booked, Tue open.
    */
   paired?: boolean;
+  /**
+   * Click anywhere in an open-slots column — including empty time — to ask about
+   * that moment. Times are snapped to `snapMinutes`.
+   */
+  onPickTime?: (startIso: string) => void;
+  snapMinutes?: number;
+  /** Highlight the time currently being asked about. */
+  selectedTime?: string | null;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -106,6 +115,9 @@ export function AvailabilityCalendar({
   scrollable = true,
   showLegend = true,
   paired = false,
+  onPickTime,
+  snapMinutes = 30,
+  selectedTime = null,
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
   const [ownOffset, setOwnOffset] = useState(0);
@@ -188,6 +200,16 @@ export function AvailabilityCalendar({
 
   const hourMarks: number[] = [];
   for (let m = fromMinute; m <= toMinute; m += 60) hourMarks.push(m);
+
+  // A click in a slots column becomes a wall-clock time on that day.
+  const pickTimeAt = (dateKey: string, event: React.MouseEvent<HTMLDivElement>) => {
+    if (!onPickTime) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
+    const raw = fromMinute + ratio * totalMinutes;
+    const snapped = Math.round(raw / snapMinutes) * snapMinutes;
+    onPickTime(zonedTimeToUtc(dateKey, snapped, tz).toISOString());
+  };
 
   // What each rendered column is: a day, and which layer it shows.
   const columns: { key: string; kind: 'both' | 'events' | 'slots'; first: boolean }[] = paired
@@ -386,7 +408,11 @@ export function AvailabilityCalendar({
               return (
                 <div
                   key={`${key}-${kind}-${index}`}
-                  className={`flex-1 relative ${column.first ? 'border-l-2' : 'border-l'} border-gray-200`}
+                  onClick={onPickTime && kind !== 'events' ? e => pickTimeAt(key, e) : undefined}
+                  className={`flex-1 relative ${column.first ? 'border-l-2' : 'border-l'} border-gray-200 ${
+                    onPickTime && kind !== 'events' ? 'cursor-help' : ''
+                  }`}
+                  title={onPickTime && kind !== 'events' ? 'Click any time to ask why it is or is not open' : undefined}
                 >
                   {hourMarks.map(minute => (
                     <div
@@ -395,6 +421,18 @@ export function AvailabilityCalendar({
                       style={{ top: yFor(minute) }}
                     />
                   ))}
+
+                  {selectedTime && kind !== 'events' &&
+                    dateKeyInZone(selectedTime, tz) === key && (
+                      <div
+                        className="absolute left-0 right-0 border-t-2 border-blue-600 z-10 pointer-events-none"
+                        style={{ top: yFor(minutesInZone(selectedTime, tz)) }}
+                      >
+                        <span className="absolute -top-2 left-0 text-[9px] bg-blue-600 text-white px-1 rounded">
+                          {minuteLabel(minutesInZone(selectedTime, tz))}
+                        </span>
+                      </div>
+                    )}
 
                   {showOpen && open.map(block => (
                     <div

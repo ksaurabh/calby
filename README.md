@@ -121,6 +121,13 @@ English, and share a booking link that writes real invites to your calendar.
   (schedule), Monday (open slots), Tuesday (schedule), Tuesday (open slots). One
   grid means one time axis and one scrollbar, so the two views of a day can
   never drift out of line.
+- **"Why isn't this open?"** Click any time in an open-slots column — including
+  empty space — and the agent explains it. The reasons are worked out
+  deterministically from the same data the slots came from (outside the days or
+  hours, off the slot grid, inside the notice period, past the horizon, a named
+  calendar conflict, a buffer around one, an opaque busy block, the per-day cap,
+  already booked, or removed by the commitment-aware review); the model only
+  phrases them, so the answer can never disagree with the calendar.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -188,6 +195,7 @@ All routes require an authenticated session on an allowed domain.
 | PUT | `/api/event-types/:id` | owner | Update; re-interprets changed guidance |
 | DELETE | `/api/event-types/:id` | owner | Delete one |
 | GET | `/api/event-types/:id/availability` | owner | Preview your open slots |
+| POST | `/api/event-types/:id/slot-explanation` | owner | Why a given time is or isn't offered |
 | GET | `/api/bookings` | user | Bookings taken on your event types |
 | GET | `/api/calendar/events` | user | Your entries, coloured from cache (no model call) |
 | POST | `/api/calendar/classify` | user | Start background classification of the rest |
