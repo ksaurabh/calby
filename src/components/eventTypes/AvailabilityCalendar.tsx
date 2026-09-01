@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { CalendarEvent, SchedulingRules, SlotDay } from '../../types';
+import type { CalendarEvent, CommitmentType, SchedulingRules, SlotDay } from '../../types';
 import {
   dateKeyInZone,
   dateKeyRange,
@@ -14,6 +14,8 @@ interface AvailabilityCalendarProps {
   days: SlotDay[];
   events: CalendarEvent[];
   rules: SchedulingRules;
+  /** Colours entries whose commitment condition they satisfy. */
+  commitmentTypes?: CommitmentType[];
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -25,6 +27,20 @@ interface Block {
   height: number;
   label: string;
   sublabel?: string;
+  /** Commitment type colour, when the entry matched one. */
+  color?: string;
+  typeName?: string;
+}
+
+/** Unmatched entries keep the neutral grey. */
+const NEUTRAL = { bg: '#e5e7eb', border: '#d1d5db', text: '#374151' };
+
+function blockStyle(color?: string) {
+  if (!color) {
+    return { backgroundColor: NEUTRAL.bg, borderColor: NEUTRAL.border, color: NEUTRAL.text };
+  }
+  // Hex + alpha keeps the fill light enough for the label to stay readable.
+  return { backgroundColor: `${color}26`, borderColor: color, color };
 }
 
 /**
@@ -32,9 +48,19 @@ interface Block {
  * bookable slots in green, so the owner can see what the guidance actually
  * opened up against what their calendar already holds.
  */
-export function AvailabilityCalendar({ days, events, rules }: AvailabilityCalendarProps) {
+export function AvailabilityCalendar({
+  days,
+  events,
+  rules,
+  commitmentTypes = [],
+}: AvailabilityCalendarProps) {
   const tz = rules.timezone;
   const [pageOffset, setPageOffset] = useState(0);
+
+  const typeById = useMemo(
+    () => new Map(commitmentTypes.map(t => [t.id, t])),
+    [commitmentTypes]
+  );
 
   const slotsByDate = useMemo(() => {
     const map = new Map<string, SlotDay['slots']>();
@@ -102,12 +128,15 @@ export function AvailabilityCalendar({ days, events, rules }: AvailabilityCalend
       const endsToday = dateKeyInZone(event.end, tz) === key;
       const startMin = startsToday ? minutesInZone(event.start, tz) : 0;
       const endMin = endsToday ? minutesInZone(event.end, tz) : 24 * 60;
+      const type = event.commitmentTypeId ? typeById.get(event.commitmentTypeId) : undefined;
       return {
         key: `${event.id}-${key}`,
         top: yFor(startMin),
         height: Math.max(14, ((endMin - startMin) / 60) * HOUR_HEIGHT),
         label: event.summary,
         sublabel: minuteLabel(startMin),
+        color: type?.color,
+        typeName: type?.name,
       };
     });
 
@@ -147,14 +176,26 @@ export function AvailabilityCalendar({ days, events, rules }: AvailabilityCalend
         </div>
       </div>
 
-      <div className="flex items-center gap-4 mb-3 text-xs text-gray-600">
+      <div className="flex items-center gap-4 gap-y-2 mb-3 text-xs text-gray-600 flex-wrap">
         <span className="flex items-center gap-1.5">
           <span className="inline-block w-3 h-3 rounded bg-emerald-100 border border-emerald-400" />
           Bookable
         </span>
+        {commitmentTypes.map(type => (
+          <span key={type.id} className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-3 h-3 rounded border"
+              style={{ backgroundColor: `${type.color}26`, borderColor: type.color }}
+            />
+            {type.name}
+          </span>
+        ))}
         <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded bg-gray-200 border border-gray-300" />
-          Existing meeting
+          <span
+            className="inline-block w-3 h-3 rounded border"
+            style={{ backgroundColor: NEUTRAL.bg, borderColor: NEUTRAL.border }}
+          />
+          {commitmentTypes.length ? 'No commitment type' : 'Existing meeting'}
         </span>
       </div>
 
@@ -220,12 +261,18 @@ export function AvailabilityCalendar({ days, events, rules }: AvailabilityCalend
                   {meetings.map(block => (
                     <div
                       key={block.key}
-                      className="absolute left-0.5 right-0.5 rounded bg-gray-200 border border-gray-300 px-1 overflow-hidden"
-                      style={{ top: block.top, height: block.height }}
-                      title={`${block.label} · ${block.sublabel}`}
+                      className="absolute left-0.5 right-0.5 rounded border px-1 overflow-hidden"
+                      style={{ top: block.top, height: block.height, ...blockStyle(block.color) }}
+                      title={[block.label, block.sublabel, block.typeName && `· ${block.typeName}`]
+                        .filter(Boolean)
+                        .join(' ')}
                     >
-                      <div className="text-[10px] font-medium text-gray-700 truncate">{block.label}</div>
-                      {block.height > 28 && <div className="text-[10px] text-gray-500">{block.sublabel}</div>}
+                      <div className="text-[10px] font-medium truncate">{block.label}</div>
+                      {block.height > 28 && (
+                        <div className="text-[10px] opacity-75 truncate">
+                          {block.typeName || block.sublabel}
+                        </div>
+                      )}
                     </div>
                   ))}
 

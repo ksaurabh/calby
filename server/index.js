@@ -26,6 +26,7 @@ import {
   interpretGuidance,
   slotIsAvailable,
 } from './scheduling.js';
+import { classifyEvents, clearClassificationCache } from './classify.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,6 +41,7 @@ const USERS_FILE = join(__dirname, 'users.json');
 const ORGS_FILE = join(__dirname, 'orgs.json');
 const EVENT_TYPES_FILE = join(__dirname, 'event-types.json');
 const BOOKINGS_FILE = join(__dirname, 'bookings.json');
+const COMMITMENT_TYPES_FILE = join(__dirname, 'commitment-types.json');
 
 // Public base URL for links in calendar invites (the frontend origin).
 const PUBLIC_URL = (process.env.CLIENT_URL || 'http://localhost:5178').replace(/\/+$/, '');
@@ -70,6 +72,9 @@ if (!existsSync(EVENT_TYPES_FILE)) {
 }
 if (!existsSync(BOOKINGS_FILE)) {
   writeFileSync(BOOKINGS_FILE, JSON.stringify({ bookings: [] }, null, 2));
+}
+if (!existsSync(COMMITMENT_TYPES_FILE)) {
+  writeFileSync(COMMITMENT_TYPES_FILE, JSON.stringify({ commitmentTypes: [] }, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +304,21 @@ function saveEventTypes(eventTypes) {
   writeFileSync(EVENT_TYPES_FILE, JSON.stringify({ eventTypes }, null, 2));
 }
 
+function getCommitmentTypes(ownerEmail) {
+  const all = readJson(COMMITMENT_TYPES_FILE, { commitmentTypes: [] }).commitmentTypes || [];
+  return ownerEmail ? all.filter(t => t.ownerEmail === ownerEmail.toLowerCase()) : all;
+}
+
+function saveCommitmentTypes(commitmentTypes) {
+  writeFileSync(COMMITMENT_TYPES_FILE, JSON.stringify({ commitmentTypes }, null, 2));
+}
+
+// Colours are picked from a fixed palette so the calendar stays legible.
+const COMMITMENT_COLORS = [
+  '#2563eb', '#7c3aed', '#db2777', '#dc2626', '#ea580c',
+  '#ca8a04', '#16a34a', '#0d9488', '#0891b2', '#4b5563',
+];
+
 function getBookings() {
   return readJson(BOOKINGS_FILE, { bookings: [] }).bookings || [];
 }
@@ -348,13 +368,29 @@ function generatePublicSlug() {
   return out;
 }
 
+// Which meeting length to use: the requested one when it is on offer, the
+// event type's default otherwise. Returns null for an unsupported request.
+function resolveDuration(eventType, requested) {
+  const options = eventType.rules.durationOptions?.length
+    ? eventType.rules.durationOptions
+    : [eventType.rules.durationMinutes];
+  if (requested === undefined || requested === null || requested === '') {
+    return eventType.rules.durationMinutes;
+  }
+  const wanted = Number(requested);
+  return options.includes(wanted) ? wanted : null;
+}
+
 // What a booking page may see. Never leaks the owner's guidance or email.
-function publicEventType(eventType, ownerName) {
+function publicEventType(eventType, ownerName, durationMinutes) {
   return {
     name: externalNameOf(eventType),
     description: eventType.description || '',
     ownerName,
-    durationMinutes: eventType.rules.durationMinutes,
+    durationMinutes: durationMinutes || eventType.rules.durationMinutes,
+    durationOptions: eventType.rules.durationOptions?.length
+      ? eventType.rules.durationOptions
+      : [eventType.rules.durationMinutes],
     timezone: eventType.rules.timezone,
     availabilitySummary: eventType.rules.summary || '',
   };
@@ -375,7 +411,7 @@ function saveCalendarFor(email, calendar) {
 
 // Busy time + open slots for one event type. Shared by the owner's preview and
 // the public booking page.
-async function availabilityFor(eventType, { ignoreBookingId = null } = {}) {
+async function availabilityFor(eventType, { ignoreBookingId = null, durationMinutes = null } = {}) {
   const calendar = calendarFor(eventType.ownerEmail);
   if (!calendar?.refreshToken) {
     const err = new Error('The owner has not connected a calendar yet.');
@@ -394,7 +430,10 @@ async function availabilityFor(eventType, { ignoreBookingId = null } = {}) {
     .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
-  return { days: generateSlots({ rules: eventType.rules, busy, now, takenStarts }), token };
+  return {
+    days: generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes }),
+    token,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -909,14 +948,29 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
   );
   if (!eventType) return res.status(404).json({ error: 'Event type not found' });
 
+  const durationMinutes = resolveDuration(eventType, req.query.duration);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
   try {
-    const { days, token } = await availabilityFor(eventType);
+    const { days, token } = await availabilityFor(eventType, { durationMinutes });
     const now = new Date();
     const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
     // Event titles are the owner's own data — this route is behind requireAuth
     // and scoped to event types they own.
     const events = await fetchEvents(token, now, horizonEnd);
-    res.json({ days, rules: eventType.rules, events });
+
+    // Colour-code the calendar by commitment type.
+    const commitmentTypes = getCommitmentTypes(req.user.email);
+    const assignments = await classifyEvents(events, commitmentTypes);
+    const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
+
+    res.json({
+      days,
+      rules: eventType.rules,
+      events: labelled,
+      commitmentTypes,
+      durationMinutes,
+    });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
   }
@@ -949,10 +1003,16 @@ app.get('/api/book/:slug', async (req, res) => {
   const eventType = findBySlug(req.params.slug);
   if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });
 
+  const durationMinutes = resolveDuration(eventType, req.query.duration);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
   const owner = findUser(eventType.ownerEmail);
   try {
-    const { days } = await availabilityFor(eventType);
-    res.json({ eventType: publicEventType(eventType, owner?.name || 'the host'), days });
+    const { days } = await availabilityFor(eventType, { durationMinutes });
+    res.json({
+      eventType: publicEventType(eventType, owner?.name || 'the host', durationMinutes),
+      days,
+    });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
   }
@@ -971,16 +1031,19 @@ app.post('/api/book/:slug', async (req, res) => {
   if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required' });
   if (!start || Number.isNaN(Date.parse(start))) return res.status(400).json({ error: 'Pick a time slot' });
 
+  const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
   try {
     // Re-check against the live calendar: the slot may have been taken between
     // the page loading and this submission.
-    const { days, token } = await availabilityFor(eventType);
+    const { days, token } = await availabilityFor(eventType, { durationMinutes });
     if (!slotIsAvailable(new Date(start).toISOString(), days)) {
       return res.status(409).json({ error: 'That time was just taken. Please pick another slot.' });
     }
 
     const startDate = new Date(start);
-    const endDate = new Date(startDate.getTime() + eventType.rules.durationMinutes * 60_000);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
     const owner = findUser(eventType.ownerEmail);
 
     const manageToken = generateManageToken();
@@ -1013,6 +1076,7 @@ app.post('/api/book/:slug', async (req, res) => {
       notes,
       start: startDate.toISOString(),
       end: endDate.toISOString(),
+      durationMinutes,
       timezone: eventType.rules.timezone,
       googleEventId: event.id || null,
       googleEventLink: event.htmlLink || null,
@@ -1026,6 +1090,7 @@ app.post('/api/book/:slug', async (req, res) => {
       booking: {
         start: booking.start,
         end: booking.end,
+        durationMinutes,
         timezone: booking.timezone,
         name: booking.name,
         email: booking.email,
@@ -1062,7 +1127,7 @@ function publicBooking(booking, eventType, ownerName) {
     start: booking.start,
     end: booking.end,
     timezone: booking.timezone,
-    durationMinutes: eventType?.rules.durationMinutes ?? null,
+    durationMinutes: booking.durationMinutes || eventType?.rules.durationMinutes || null,
     status: booking.status,
   };
 }
@@ -1086,7 +1151,11 @@ app.get('/api/booking/:token', async (req, res) => {
 
   try {
     // Ignore this booking's own slot so the current time isn't double-counted.
-    const { days } = await availabilityFor(eventType, { ignoreBookingId: booking.id });
+    const { days } = await availabilityFor(eventType, {
+      ignoreBookingId: booking.id,
+      // Offer alternatives at the length this meeting was booked at.
+      durationMinutes: booking.durationMinutes || eventType.rules.durationMinutes,
+    });
     payload.days = days;
   } catch {
     // Availability is only needed for rescheduling; cancelling still works.
@@ -1150,14 +1219,18 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
   }
 
   try {
-    const { days, token } = await availabilityFor(eventType, { ignoreBookingId: booking.id });
+    const durationMinutes = booking.durationMinutes || eventType.rules.durationMinutes;
+    const { days, token } = await availabilityFor(eventType, {
+      ignoreBookingId: booking.id,
+      durationMinutes,
+    });
     const startIso = new Date(start).toISOString();
     if (!slotIsAvailable(startIso, days)) {
       return res.status(409).json({ error: 'That time is no longer open. Please pick another slot.' });
     }
 
     const startDate = new Date(startIso);
-    const endDate = new Date(startDate.getTime() + eventType.rules.durationMinutes * 60_000);
+    const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
 
     if (booking.googleEventId) {
       await updateEventTime(token, booking.googleEventId, {
@@ -1182,6 +1255,78 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
     console.error('[booking] reschedule failed:', err.message);
     res.status(err.status || 502).json({ error: err.message });
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// Commitment types — plain-text conditions describing what a calendar entry is,
+// each with a colour, used to colour-code the availability preview.
+// ---------------------------------------------------------------------------
+app.get('/api/commitment-types', requireAuth, (req, res) => {
+  res.json({
+    commitmentTypes: getCommitmentTypes(req.user.email)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    colors: COMMITMENT_COLORS,
+  });
+});
+
+app.post('/api/commitment-types', requireAuth, (req, res) => {
+  const name = req.body.name?.trim();
+  const condition = req.body.condition?.trim() || '';
+  if (!name) return res.status(400).json({ error: 'A name is required' });
+  if (!condition) {
+    return res.status(400).json({ error: 'Describe which calendar entries satisfy this commitment' });
+  }
+
+  const all = getCommitmentTypes();
+  const mine = all.filter(t => t.ownerEmail === req.user.email.toLowerCase());
+  const now = new Date().toISOString();
+  const commitmentType = {
+    id: generateId('ct'),
+    ownerEmail: req.user.email.toLowerCase(),
+    name,
+    condition,
+    // Default to the next unused palette colour.
+    color: COMMITMENT_COLORS.includes(req.body.color)
+      ? req.body.color
+      : COMMITMENT_COLORS[mine.length % COMMITMENT_COLORS.length],
+    createdAt: now,
+    updatedAt: now,
+  };
+  saveCommitmentTypes([...all, commitmentType]);
+  // Conditions changed, so cached classifications no longer apply.
+  clearClassificationCache();
+  res.json(commitmentType);
+});
+
+app.put('/api/commitment-types/:id', requireAuth, (req, res) => {
+  const all = getCommitmentTypes();
+  const index = all.findIndex(
+    t => t.id === req.params.id && t.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (index < 0) return res.status(404).json({ error: 'Commitment type not found' });
+
+  all[index] = {
+    ...all[index],
+    name: req.body.name?.trim() || all[index].name,
+    condition: req.body.condition?.trim() || all[index].condition,
+    color: COMMITMENT_COLORS.includes(req.body.color) ? req.body.color : all[index].color,
+    updatedAt: new Date().toISOString(),
+  };
+  saveCommitmentTypes(all);
+  clearClassificationCache();
+  res.json(all[index]);
+});
+
+app.delete('/api/commitment-types/:id', requireAuth, (req, res) => {
+  const all = getCommitmentTypes();
+  const exists = all.some(
+    t => t.id === req.params.id && t.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (!exists) return res.status(404).json({ error: 'Commitment type not found' });
+  saveCommitmentTypes(all.filter(t => t.id !== req.params.id));
+  clearClassificationCache();
+  res.json({ success: true });
 });
 
 // ---------------------------------------------------------------------------

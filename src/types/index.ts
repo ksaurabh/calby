@@ -31,7 +31,9 @@ export interface OrgInput {
 }
 
 export interface SchedulingRules {
+  /** Default length; durationOptions holds everything on offer. */
   durationMinutes: number;
+  durationOptions: number[];
   horizonWeeks: number;
   timezone: string;
   /** 0 = Sunday … 6 = Saturday */
@@ -91,6 +93,25 @@ export interface CalendarEvent {
   allDay: boolean;
   start: string;
   end: string;
+  /** Which commitment type this entry was judged to satisfy, if any. */
+  commitmentTypeId?: string | null;
+}
+
+/** A plain-text condition describing a kind of calendar entry, plus a colour. */
+export interface CommitmentType {
+  id: string;
+  ownerEmail: string;
+  name: string;
+  condition: string;
+  color: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CommitmentTypeInput {
+  name: string;
+  condition: string;
+  color?: string;
 }
 
 export interface PublicEventType {
@@ -98,6 +119,8 @@ export interface PublicEventType {
   description: string;
   ownerName: string;
   durationMinutes: number;
+  durationOptions: number[];
+  /** The host's timezone, offered as a shortcut in the timezone picker. */
   timezone: string;
   availabilitySummary: string;
 }
@@ -113,6 +136,7 @@ export interface Booking {
   notes: string;
   start: string;
   end: string;
+  durationMinutes?: number;
   timezone: string;
   googleEventLink: string | null;
   status: string;

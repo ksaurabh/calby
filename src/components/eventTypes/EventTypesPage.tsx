@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CalendarEvent, CalendarStatus, EventType, SlotDay } from '../../types';
+import type {
+  CalendarEvent,
+  CalendarStatus,
+  CommitmentType,
+  EventType,
+  SlotDay,
+} from '../../types';
 import { api } from '../../utils/api';
 import { Button, Modal } from '../common';
 import { AvailabilityCalendar } from './AvailabilityCalendar';
@@ -21,8 +27,9 @@ function minutesToLabel(minutes: number) {
 function rulesSummary(eventType: EventType) {
   const r = eventType.rules;
   const days = r.weekdays.length === 7 ? 'every day' : r.weekdays.map(d => DAY_NAMES[d]).join(', ');
+  const lengths = r.durationOptions?.length ? r.durationOptions : [r.durationMinutes];
   const parts = [
-    `${r.durationMinutes} min`,
+    `${lengths.join(' / ')} min`,
     days,
     `${minutesToLabel(r.startMinute)}–${minutesToLabel(r.endMinute)} ${r.timezone}`,
     `${r.horizonWeeks} week${r.horizonWeeks === 1 ? '' : 's'} ahead`,
@@ -42,6 +49,8 @@ export function EventTypesPage() {
     eventType: EventType;
     days: SlotDay[];
     events: CalendarEvent[];
+    commitmentTypes: CommitmentType[];
+    durationMinutes: number;
   } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -126,11 +135,12 @@ export function EventTypesPage() {
     await load();
   };
 
-  const showPreview = async (eventType: EventType) => {
+  const showPreview = async (eventType: EventType, durationMinutes?: number) => {
     setError(null);
     try {
-      const { days, events } = await api.eventTypeAvailability(eventType.id);
-      setPreview({ eventType, days, events });
+      const { days, events, commitmentTypes, durationMinutes: used } =
+        await api.eventTypeAvailability(eventType.id, durationMinutes);
+      setPreview({ eventType, days, events, commitmentTypes, durationMinutes: used });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -274,6 +284,24 @@ export function EventTypesPage() {
       >
         {preview && (
           <>
+            {preview.eventType.rules.durationOptions?.length > 1 && (
+              <div className="flex items-center gap-2 flex-wrap mb-4">
+                <span className="text-sm text-gray-600">Preview length</span>
+                {preview.eventType.rules.durationOptions.map(minutes => (
+                  <button
+                    key={minutes}
+                    onClick={() => showPreview(preview.eventType, minutes)}
+                    className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
+                      preview.durationMinutes === minutes
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-gray-300 text-gray-700 hover:border-blue-500 hover:bg-blue-50'
+                    }`}
+                  >
+                    {minutes} min
+                  </button>
+                ))}
+              </div>
+            )}
             {preview.days.length === 0 && (
               <p className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-4">
                 No open slots in the next {preview.eventType.rules.horizonWeeks} week(s) — your
@@ -284,6 +312,7 @@ export function EventTypesPage() {
               days={preview.days}
               events={preview.events}
               rules={preview.eventType.rules}
+              commitmentTypes={preview.commitmentTypes}
             />
           </>
         )}

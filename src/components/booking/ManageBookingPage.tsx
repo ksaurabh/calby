@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ManagedBooking, SlotDay } from '../../types';
 import { api } from '../../utils/api';
-import { browserTimezone, formatDateTime, formatDayLabel, formatTime } from '../../utils/format';
+import { browserTimezone, formatDateTime } from '../../utils/format';
 import { Button } from '../common';
+import { BookingScheduler } from './BookingScheduler';
 
 const inputClass =
   'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
@@ -21,7 +22,7 @@ export function ManageBookingPage({ token, mode }: { token: string; mode: 'cance
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const viewerTz = browserTimezone();
+  const [viewerTz, setViewerTz] = useState(browserTimezone());
 
   const load = useCallback(async () => {
     try {
@@ -72,7 +73,7 @@ export function ManageBookingPage({ token, mode }: { token: string; mode: 'cance
 
   const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 px-4 py-10">
-      <div className="max-w-2xl mx-auto">{children}</div>
+      <div className={`${mode === 'reschedule' ? 'max-w-4xl' : 'max-w-2xl'} mx-auto`}>{children}</div>
     </div>
   );
 
@@ -140,7 +141,10 @@ export function ManageBookingPage({ token, mode }: { token: string; mode: 'cance
     <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
       <div className="font-medium text-gray-900">{booking.eventTypeName} with {booking.ownerName}</div>
       <div className="text-gray-700 mt-1">{formatDateTime(booking.start, viewerTz)}</div>
-      <div className="text-xs text-gray-500 mt-1">{viewerTz}</div>
+      <div className="text-xs text-gray-500 mt-1">
+        {viewerTz}
+        {booking.durationMinutes ? ` · ${booking.durationMinutes} minutes` : ''}
+      </div>
     </div>
   );
 
@@ -177,37 +181,23 @@ export function ManageBookingPage({ token, mode }: { token: string; mode: 'cance
       <div className="mt-4">{summary}</div>
       {error && <div className="mt-4 rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>}
 
-      {days.length === 0 ? (
-        <p className="mt-5 text-gray-600">No other times are open right now. Please check back later.</p>
-      ) : (
-        <div className="mt-5 space-y-5 max-h-96 overflow-y-auto pr-1">
-          {days.map(day => (
-            <div key={day.date}>
-              <div className="text-sm font-medium text-gray-900">{formatDayLabel(day.slots[0].start)}</div>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {day.slots.map(slot => (
-                  <button
-                    key={slot.start}
-                    onClick={() => setSelected(slot.start)}
-                    className={`text-sm px-3 py-2 rounded-lg border transition-colors ${
-                      selected === slot.start
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-gray-300 text-gray-700 hover:border-blue-500 hover:bg-blue-50'
-                    }`}
-                  >
-                    {formatTime(slot.start)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="mt-6">
+        <BookingScheduler
+          days={days}
+          timezone={viewerTz}
+          onTimezoneChange={setViewerTz}
+          hostTimezone={booking.timezone}
+          selected={selected}
+          onSelect={setSelected}
+          action={
+            <Button className="w-full" onClick={reschedule} disabled={busy}>
+              {busy ? 'Moving…' : 'Confirm'}
+            </Button>
+          }
+        />
+      </div>
 
       <div className="flex gap-2 mt-6 border-t border-gray-100 pt-5">
-        <Button onClick={reschedule} disabled={!selected || busy}>
-          {busy ? 'Moving…' : 'Confirm new time'}
-        </Button>
         <a
           href={window.location.pathname.replace('/reschedule/', '/cancel/')}
           className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50"

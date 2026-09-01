@@ -41,11 +41,20 @@ English, and share a booking link that writes real invites to your calendar.
   what the guidance opened up (green), so you can see the two together before
   sharing the link. All-day events get their own row; the grid widens
   automatically to include meetings outside the bookable window.
+- **Multiple durations.** Guidance like "15, 30 or 60 minute calls" produces
+  several offered lengths. The booking page then shows a length picker, and slot
+  boundaries are recomputed per length off a shared grid, so switching doesn't
+  shuffle the start times. Rescheduling keeps the length that was booked.
 - **Booking links.** Every event type gets a URL containing a 16-character
   random slug (`/book/rTnmGfNGS3sL6tRP`), generated with a CSPRNG. The page is
   public — no sign-in — and shows only the event name, host display name,
   duration, and open slots. The owner's email and guidance are never exposed.
-- **Booking.** A visitor picks a slot, gives a name and email, and submits. The
+- **Booking.** A month calendar shows which days have openings (greyed out when
+  they don't); picking a day lists that day's times beside it, and choosing one
+  leads to a short details form — the Calendly shape. Visitors see times in their
+  own timezone by default and can switch to any other, with "your current
+  timezone" and the host's pinned at the top of the list. A visitor picks a slot,
+  gives a name and email, and submits. The
   agent re-checks the calendar (the slot may have gone in the meantime), creates
   the event on the owner's primary calendar with the visitor as a guest, and
   Google emails the invitation to both.
@@ -54,6 +63,13 @@ English, and share a booking link that writes real invites to your calendar.
   can change the meeting without an account. Rescheduling patches the existing
   calendar event (Google re-notifies both sides); cancelling deletes it and frees
   the slot. Both pages are also linked from the booking confirmation.
+- **Commitment types.** A commitment type is a plain-text condition describing a
+  kind of calendar entry ("any meeting with a customer") plus a colour from a
+  fixed palette. In the availability preview, Claude labels each existing entry
+  with whichever condition it satisfies and the calendar colour-codes
+  accordingly, with a legend; unmatched entries stay grey. Results are cached by
+  title so repeat previews don't re-ask the model, and without an API key the
+  labelling falls back to keyword overlap.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -122,6 +138,10 @@ All routes require an authenticated session on an allowed domain.
 | DELETE | `/api/event-types/:id` | owner | Delete one |
 | GET | `/api/event-types/:id/availability` | owner | Preview your open slots |
 | GET | `/api/bookings` | user | Bookings taken on your event types |
+| GET | `/api/commitment-types` | user | List your commitment types + palette |
+| POST | `/api/commitment-types` | user | Create one |
+| PUT | `/api/commitment-types/:id` | owner | Update name, condition or colour |
+| DELETE | `/api/commitment-types/:id` | owner | Delete one |
 | GET | `/api/book/:slug` | **public** | Booking page data + open slots |
 | POST | `/api/book/:slug` | **public** | Book a slot; creates the calendar event |
 | GET | `/api/booking/:token` | **public** | Booking details + alternative slots |
@@ -148,5 +168,6 @@ Created under `server/` at first run and excluded from git:
 - `users.json` — everyone who has signed in
 - `event-types.json` — event types, their guidance and derived rules
 - `bookings.json` — bookings taken through booking pages
+- `commitment-types.json` — commitment conditions and their colours
 - `allowed-domains.json` — extra domains permitted to sign in
 - `super-admins.json` — super admin emails (see `super-admins.example.json`)

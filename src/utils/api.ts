@@ -2,6 +2,8 @@ import type {
   Booking,
   CalendarEvent,
   CalendarStatus,
+  CommitmentType,
+  CommitmentTypeInput,
   EventType,
   EventTypeInput,
   ManagedBooking,
@@ -48,6 +50,25 @@ export const api = {
   disconnectCalendar: () =>
     request<{ connected: boolean }>('/api/calendar/connect', { method: 'DELETE' }),
 
+  // Commitment types
+  listCommitmentTypes: () =>
+    request<{ commitmentTypes: CommitmentType[]; colors: string[] }>('/api/commitment-types'),
+
+  createCommitmentType: (data: CommitmentTypeInput) =>
+    request<CommitmentType>('/api/commitment-types', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateCommitmentType: (id: string, data: Partial<CommitmentTypeInput>) =>
+    request<CommitmentType>(`/api/commitment-types/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteCommitmentType: (id: string) =>
+    request<{ success: boolean }>(`/api/commitment-types/${id}`, { method: 'DELETE' }),
+
   // Event types
   listEventTypes: () => request<{ eventTypes: EventType[] }>('/api/event-types'),
 
@@ -60,18 +81,29 @@ export const api = {
   deleteEventType: (id: string) =>
     request<{ success: boolean }>(`/api/event-types/${id}`, { method: 'DELETE' }),
 
-  eventTypeAvailability: (id: string) =>
-    request<{ days: SlotDay[]; rules: SchedulingRules; events: CalendarEvent[] }>(
-      `/api/event-types/${id}/availability`
+  eventTypeAvailability: (id: string, durationMinutes?: number) =>
+    request<{
+      days: SlotDay[];
+      rules: SchedulingRules;
+      events: CalendarEvent[];
+      commitmentTypes: CommitmentType[];
+      durationMinutes: number;
+    }>(
+      `/api/event-types/${id}/availability${durationMinutes ? `?duration=${durationMinutes}` : ''}`
     ),
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
   // Public booking page (no authentication)
-  bookingPage: (slug: string) =>
-    request<{ eventType: PublicEventType; days: SlotDay[] }>(`/api/book/${slug}`),
+  bookingPage: (slug: string, durationMinutes?: number) =>
+    request<{ eventType: PublicEventType; days: SlotDay[] }>(
+      `/api/book/${slug}${durationMinutes ? `?duration=${durationMinutes}` : ''}`
+    ),
 
-  book: (slug: string, data: { start: string; name: string; email: string; notes: string }) =>
+  book: (
+    slug: string,
+    data: { start: string; name: string; email: string; notes: string; durationMinutes: number }
+  ) =>
     request<{
       ok: boolean;
       booking: {

@@ -8,7 +8,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 export const DEFAULT_RULES = {
+  // The default length. durationOptions holds every length on offer; when it has
+  // more than one entry the booking page lets the visitor choose.
   durationMinutes: 30,
+  durationOptions: [30],
   horizonWeeks: 2,
   timezone: 'America/Los_Angeles',
   // 0 = Sunday … 6 = Saturday
@@ -24,7 +27,12 @@ export const DEFAULT_RULES = {
 const RULES_SCHEMA = {
   type: 'object',
   properties: {
-    durationMinutes: { type: 'integer', description: 'Meeting length in minutes' },
+    durationMinutes: { type: 'integer', description: 'Default meeting length in minutes' },
+    durationOptions: {
+      type: 'array',
+      description: 'Every meeting length offered, in minutes. Use a single entry unless the guidance offers a choice (e.g. "15, 30 or 60 minutes").',
+      items: { type: 'integer' },
+    },
     horizonWeeks: { type: 'integer', description: 'How many weeks ahead to offer, 1-12' },
     timezone: { type: 'string', description: 'IANA timezone for the working hours, e.g. America/New_York' },
     weekdays: {
@@ -41,7 +49,7 @@ const RULES_SCHEMA = {
     summary: { type: 'string', description: 'One short sentence describing the availability, shown on the booking page' },
   },
   required: [
-    'durationMinutes', 'horizonWeeks', 'timezone', 'weekdays', 'startMinute', 'endMinute',
+    'durationMinutes', 'durationOptions', 'horizonWeeks', 'timezone', 'weekdays', 'startMinute', 'endMinute',
     'slotIntervalMinutes', 'bufferMinutes', 'minNoticeHours', 'maxPerDay', 'summary',
   ],
   additionalProperties: false,
@@ -52,7 +60,10 @@ Translate the guidance into concrete rules by calling set_rules exactly once.
 Anything the guidance does not mention: use sensible professional defaults —
 30 minute meetings, Monday to Friday, 9am to 5pm local time, two weeks ahead,
 four hours notice. Interpret phrases like "afternoons", "no Fridays",
-"half hour", "next month", "with 15 minutes between calls" faithfully.`;
+"half hour", "next month", "with 15 minutes between calls" faithfully.
+When the guidance offers a choice of lengths ("15, 30 or 60 minutes",
+"quick chat or a full hour"), list them all in durationOptions and make
+durationMinutes the most likely default.`;
 
 const clampInt = (value, min, max, fallback) => {
   const n = Math.round(Number(value));
@@ -76,14 +87,29 @@ export function normalizeRules(raw = {}) {
 
   const durationMinutes = clampInt(raw.durationMinutes, 5, 8 * 60, DEFAULT_RULES.durationMinutes);
 
+  // Every offered length, de-duplicated and sorted; the default is always one of them.
+  const rawOptions = Array.isArray(raw.durationOptions) && raw.durationOptions.length
+    ? raw.durationOptions
+    : [durationMinutes];
+  const durationOptions = [...new Set(
+    rawOptions.map(d => clampInt(d, 5, 8 * 60, durationMinutes))
+  )].sort((a, b) => a - b);
+  if (!durationOptions.includes(durationMinutes)) durationOptions.push(durationMinutes);
+  durationOptions.sort((a, b) => a - b);
+
   return {
     durationMinutes,
+    durationOptions,
     horizonWeeks: clampInt(raw.horizonWeeks, 1, 12, DEFAULT_RULES.horizonWeeks),
     timezone: VALID_TZ(raw.timezone) ? raw.timezone : DEFAULT_RULES.timezone,
     weekdays: weekdays.length ? weekdays : DEFAULT_RULES.weekdays,
     startMinute,
     endMinute,
-    slotIntervalMinutes: clampInt(raw.slotIntervalMinutes, 5, 4 * 60, Math.min(durationMinutes, 30)),
+    // Slots line up on a grid shared by every offered length, so switching
+    // duration doesn't shift the start times around.
+    slotIntervalMinutes: clampInt(
+      raw.slotIntervalMinutes, 5, 4 * 60, Math.min(durationOptions[0], 30)
+    ),
     bufferMinutes: clampInt(raw.bufferMinutes, 0, 2 * 60, DEFAULT_RULES.bufferMinutes),
     minNoticeHours: clampInt(raw.minNoticeHours, 0, 30 * 24, DEFAULT_RULES.minNoticeHours),
     maxPerDay: clampInt(raw.maxPerDay, 0, 50, DEFAULT_RULES.maxPerDay),
@@ -97,10 +123,18 @@ export function rulesFromText(guidance = '') {
   const text = guidance.toLowerCase();
   const rules = { ...DEFAULT_RULES };
 
-  const duration = text.match(/(\d+)\s*(?:-|\s)?\s*(min|minute)/);
-  if (duration) rules.durationMinutes = Number(duration[1]);
-  else if (/\bhalf[- ]hour\b/.test(text)) rules.durationMinutes = 30;
-  else if (/\b(one|1)\s*hour\b|\b60\s*min/.test(text)) rules.durationMinutes = 60;
+  // "30 minute", "15, 30 or 60 minute", "15/30/60 min"
+  const durations = new Set();
+  const durationPhrase = text.match(/((?:\d+\s*(?:,|\/|or|and|-)\s*)*\d+)\s*(?:-|\s)?\s*(?:min|minute)/);
+  if (durationPhrase) {
+    for (const n of durationPhrase[1].match(/\d+/g) || []) durations.add(Number(n));
+  }
+  if (/\bhalf[- ]hour\b/.test(text)) durations.add(30);
+  if (/\b(one|1)\s*hour\b/.test(text)) durations.add(60);
+  if (durations.size) {
+    rules.durationOptions = [...durations].sort((a, b) => a - b);
+    rules.durationMinutes = rules.durationOptions[0];
+  }
 
   const weeks = text.match(/(\d+)\s*week/);
   if (weeks) rules.horizonWeeks = Number(weeks[1]);
@@ -223,11 +257,19 @@ export function zonedParts(date, timeZone) {
 const overlaps = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
 
 // Bookable slots grouped by local date.
-export function generateSlots({ rules, busy = [], now = new Date(), takenStarts = [] }) {
+export function generateSlots({
+  rules,
+  busy = [],
+  now = new Date(),
+  takenStarts = [],
+  // Which of the offered lengths to lay out; defaults to the event type's own.
+  durationMinutes: durationOverride,
+} = {}) {
   const {
-    durationMinutes, horizonWeeks, timezone, weekdays, startMinute, endMinute,
+    horizonWeeks, timezone, weekdays, startMinute, endMinute,
     slotIntervalMinutes, bufferMinutes, minNoticeHours, maxPerDay,
   } = rules;
+  const durationMinutes = durationOverride || rules.durationMinutes;
 
   const earliest = new Date(now.getTime() + minNoticeHours * 3600_000);
   const horizonEnd = new Date(now.getTime() + horizonWeeks * 7 * 86400_000);
