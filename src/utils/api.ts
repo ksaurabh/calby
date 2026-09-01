@@ -60,7 +60,12 @@ export const api = {
       timezone: string;
       from: string;
       to: string;
-      classification: { cached: number; pending: number };
+      classification: {
+        cached: number;
+        pending: number;
+        matched: number;
+        method: 'model' | 'keyword';
+      };
     }>('/api/calendar/events'),
 
   startClassification: () =>
@@ -69,6 +74,7 @@ export const api = {
       total: number;
       done: number;
       finished: boolean;
+      method: 'model' | 'keyword';
       assignments: Record<string, string>;
     }>('/api/calendar/classify', { method: 'POST', body: JSON.stringify({}) }),
 
@@ -78,6 +84,7 @@ export const api = {
       done: number;
       finished: boolean;
       error: string | null;
+      method: 'model' | 'keyword';
       assignments: Record<string, string>;
     }>(`/api/calendar/classify/${jobId}`),
 

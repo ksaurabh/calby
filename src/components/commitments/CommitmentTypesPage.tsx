@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { CalendarEvent, CommitmentType, EventExplanation } from '../../types';
+import { useAuth } from '../../context/AuthContext';
 import { api } from '../../utils/api';
 import { AvailabilityCalendar } from '../calendar';
 import { Button, Modal } from '../common';
@@ -24,6 +25,7 @@ interface FormState {
 }
 
 export function CommitmentTypesPage() {
+  const { aiKeySource } = useAuth();
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
   const [colors, setColors] = useState<string[]>([]);
   const [form, setForm] = useState<FormState | null>(null);
@@ -36,6 +38,7 @@ export function CommitmentTypesPage() {
   const [timezone, setTimezone] = useState('UTC');
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [coverage, setCoverage] = useState<{ matched: number; total: number; method: string } | null>(null);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [explaining, setExplaining] = useState<CalendarEvent | null>(null);
   const [explanation, setExplanation] = useState<EventExplanation | null>(null);
@@ -51,6 +54,11 @@ export function CommitmentTypesPage() {
       setTimezone(data.timezone);
       setCalendarError(null);
       setCalendarLoading(false);
+      setCoverage({
+        matched: data.classification.matched,
+        total: data.events.length,
+        method: data.classification.method,
+      });
 
       if (data.classification.pending === 0) {
         setProgress(null);
@@ -66,11 +74,17 @@ export function CommitmentTypesPage() {
 
       // Poll until the job reports finished, folding in colours as they land.
       const applyAssignments = (assignments: Record<string, string>) => {
-        setEvents(current =>
-          current.map(e =>
+        setEvents(current => {
+          const next = current.map(e =>
             assignments[e.id] ? { ...e, commitmentTypeId: assignments[e.id] } : e
-          )
-        );
+          );
+          setCoverage({
+            matched: next.filter(e => e.commitmentTypeId).length,
+            total: next.length,
+            method: job.method,
+          });
+          return next;
+        });
       };
 
       for (;;) {
@@ -174,6 +188,17 @@ export function CommitmentTypesPage() {
 
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm mb-4">{error}</div>}
 
+      {aiKeySource === null && (
+        <div className="rounded-lg bg-amber-50 text-amber-900 px-4 py-3 text-sm mb-4">
+          <span className="font-medium">No Anthropic API key is configured.</span> Calendar
+          entries are being matched by simple keyword overlap, which usually matches
+          nothing — so most entries stay grey — and the assistant and per-event reports are
+          unavailable. An admin of your organization can add a key on the{' '}
+          <a href="/orgs" className="underline">Organizations</a> page, or set
+          <code className="mx-1 font-mono">ANTHROPIC_API_KEY</code> on the server.
+        </div>
+      )}
+
       {loading ? (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500">Loading…</div>
       ) : commitmentTypes.length === 0 ? (
@@ -239,6 +264,12 @@ export function CommitmentTypesPage() {
                 Coloured by commitment type. Click an entry for a report on how it scores
                 against every type.
               </p>
+              {coverage && !progress && (
+                <p className="text-xs text-gray-500 mt-1">
+                  {coverage.matched} of {coverage.total} entries matched a commitment type
+                  {coverage.method === 'keyword' && ' · matched by keywords only'}
+                </p>
+              )}
 
             </div>
             <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>

@@ -1460,6 +1460,7 @@ app.post('/api/calendar/classify', requireAuth, async (req, res) => {
     assignments: {},
     finished: false,
     error: null,
+    method: anthropicKeyFor(req.user.email).key ? 'model' : 'keyword',
     updatedAt: Date.now(),
   };
   classificationJobs.set(jobId, job);
@@ -1488,7 +1489,7 @@ app.post('/api/calendar/classify', requireAuth, async (req, res) => {
     }
   })();
 
-  res.json({ jobId, total: job.total, done: 0, finished: false, assignments: {} });
+  res.json({ jobId, total: job.total, done: 0, finished: false, method: job.method, assignments: {} });
 });
 
 app.get('/api/calendar/classify/:jobId', requireAuth, (req, res) => {
@@ -1502,6 +1503,7 @@ app.get('/api/calendar/classify/:jobId', requireAuth, (req, res) => {
     done: job.done,
     finished: job.finished,
     error: job.error,
+    method: job.method,
     assignments: job.assignments,
   });
 });
@@ -1528,7 +1530,14 @@ app.get('/api/calendar/events', requireAuth, async (req, res) => {
       timezone: ownerTimezone(req.user.email),
       from: from.toISOString(),
       to: to.toISOString(),
-      classification: { cached: events.length - pending.length, pending: pending.length },
+      classification: {
+        cached: events.length - pending.length,
+        pending: pending.length,
+        matched: assignments.size,
+        // How verdicts are reached for this user: with a key it is the model,
+        // without one it is keyword overlap, which matches far less.
+        method: anthropicKeyFor(req.user.email).key ? 'model' : 'keyword',
+      },
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });

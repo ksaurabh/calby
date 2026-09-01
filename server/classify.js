@@ -238,7 +238,9 @@ export function splitCached(events, commitmentTypes) {
  * progress — and paint the colours already decided — while the rest runs.
  */
 export async function classifyEvents(events, commitmentTypes, { apiKey, onProgress } = {}) {
-  const stats = { cached: 0, fresh: 0 };
+  // `method` records how the fresh verdicts were reached, so the UI can explain
+  // why entries came back grey.
+  const stats = { cached: 0, fresh: 0, method: apiKey ? 'model' : 'keyword' };
   if (!events.length || !commitmentTypes.length) return { assignments: new Map(), stats };
 
   const { assignments, pending } = splitCached(events, commitmentTypes);
