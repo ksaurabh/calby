@@ -138,6 +138,8 @@ export const api = {
       events: CalendarEvent[];
       commitmentTypes: CommitmentType[];
       durationMinutes: number;
+      reviewNote: string | null;
+      drops: { start: string; reason: string }[];
     }>(
       `/api/event-types/${id}/availability${durationMinutes ? `?duration=${durationMinutes}` : ''}`
     ),

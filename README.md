@@ -36,6 +36,15 @@ English, and share a booking link that writes real invites to your calendar.
   horizon, notice, buffer, per-day cap), which the UI shows back to you so you
   can check the reading. Slot generation itself is deterministic, so booking
   pages never wait on a model call.
+- **Commitment-aware slots.** Free/busy answers "when am I free"; it can't answer
+  intent like *"never straight after a customer call"*. So after the deterministic
+  candidates are generated, they are reviewed once with the surrounding calendar
+  entries and their commitment types in context, and the model may **drop** slots
+  (never add or move one — a bad answer costs availability, it can't double-book
+  you). The preview shows what was dropped and why. The review is cached under
+  the guidance, the candidate slots and the classified commitments; public
+  booking pages apply a cached review but never trigger a model call themselves,
+  so a shared link stays fast and can't be used to run up cost.
 - **Availability preview.** "Preview slots" opens a week calendar in the event
   type's timezone showing your existing meetings (grey, with titles) alongside
   what the guidance opened up (green), so you can see the two together before

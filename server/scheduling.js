@@ -307,3 +307,171 @@ export function generateSlots({
 export function slotIsAvailable(startIso, days) {
   return days.some(d => d.slots.some(s => s.start === startIso));
 }
+
+// ---------------------------------------------------------------------------
+// Commitment-aware slot review
+// ---------------------------------------------------------------------------
+// Slot generation is deterministic — rules plus free/busy. That handles "when am
+// I free", but not intent expressed in the guidance about *what* the surrounding
+// commitments are: "not straight after a customer call", "keep a gap around
+// interviews", "no more than two customer calls a day".
+//
+// So the candidates are computed first, then reviewed once with the day's
+// commitments and their commitment types in context. The model can only remove
+// slots, never invent them, so a bad answer costs availability rather than
+// double-booking someone.
+const REVIEW_SYSTEM = `You refine a list of already-free meeting slots.
+
+The slots are all genuinely free on the person's calendar. Your job is to drop
+the ones their availability guidance implies they would not want, given what
+else is on the calendar that day and what kind of commitment each entry is.
+
+Rules:
+- Only drop slots. Never add or move one.
+- Drop a slot only when the guidance actually implies it. If the guidance says
+  nothing that bears on a slot, keep it.
+- Typical reasons to drop: too close to a particular kind of commitment, too many
+  of one kind of meeting in a day, a day the guidance treats as protected.
+- Be conservative: keeping a slot the person did not want is a smaller problem
+  than emptying their calendar. If in doubt, keep it.
+- Give a short reason for each drop, naming the commitment it relates to.`;
+
+const REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    drops: {
+      type: 'array',
+      description: 'Slots to remove. Empty when the guidance implies no removals.',
+      items: {
+        type: 'object',
+        properties: {
+          date: { type: 'string', description: 'The slot\'s local date, YYYY-MM-DD' },
+          time: { type: 'string', description: 'The slot\'s local start time, HH:MM (24 hour)' },
+          reason: { type: 'string', description: 'One short sentence' },
+        },
+        required: ['date', 'time', 'reason'],
+        additionalProperties: false,
+      },
+    },
+    note: {
+      type: 'string',
+      description: 'One sentence on what was applied, or why nothing was dropped.',
+    },
+  },
+  required: ['drops', 'note'],
+  additionalProperties: false,
+};
+
+/** "HH:MM" for an instant, in a timezone. */
+function localTime(iso, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone, hour12: false, hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(iso)).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  return `${parts.hour}:${parts.minute}`;
+}
+
+function localDate(iso, timeZone) {
+  return zonedParts(new Date(iso), timeZone).isoDate;
+}
+
+/**
+ * Filter candidate slots using the guidance plus the day's classified
+ * commitments. Returns the surviving days, the drops and a note. Falls back to
+ * the candidates untouched when there is no API key or the call fails.
+ */
+export async function reviewSlots({
+  guidance,
+  rules,
+  days,
+  events = [],
+  commitmentTypes = [],
+  assignments = new Map(),
+  apiKey,
+}) {
+  const unchanged = { days, drops: [], note: null, reviewed: false };
+  if (!apiKey || !days.length || !guidance) return unchanged;
+
+  const tz = rules.timezone;
+  const typeName = id => commitmentTypes.find(t => t.id === id)?.name || 'unclassified';
+
+  // Only the days that actually have candidates are worth describing.
+  const dayKeys = new Set(days.flatMap(d => d.slots.map(s => localDate(s.start, tz))));
+  const eventsByDate = new Map();
+  for (const event of events) {
+    if (event.allDay) continue;
+    const key = localDate(event.start, tz);
+    if (!dayKeys.has(key)) continue;
+    eventsByDate.set(key, [...(eventsByDate.get(key) || []), event]);
+  }
+
+  const lines = [];
+  for (const key of [...dayKeys].sort()) {
+    lines.push(`${key}:`);
+    const dayEvents = eventsByDate.get(key) || [];
+    lines.push(dayEvents.length
+      ? `  commitments: ${dayEvents
+          .map(e => `${localTime(e.start, tz)}-${localTime(e.end, tz)} "${e.summary}" [${typeName(assignments.get(e.id))}]`)
+          .join('; ')}`
+      : '  commitments: none');
+    const times = days
+      .flatMap(d => d.slots)
+      .filter(s => localDate(s.start, tz) === key)
+      .map(s => localTime(s.start, tz));
+    lines.push(`  free slots: ${times.join(', ')}`);
+  }
+
+  try {
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: 'claude-opus-5',
+      max_tokens: 8000,
+      system: REVIEW_SYSTEM,
+      tools: [{
+        name: 'drop_slots',
+        description: 'Record which slots to remove and why.',
+        strict: true,
+        input_schema: REVIEW_SCHEMA,
+      }],
+      tool_choice: { type: 'tool', name: 'drop_slots' },
+      messages: [{
+        role: 'user',
+        content: [
+          `Availability guidance (verbatim):\n"""\n${guidance}\n"""`,
+          '',
+          `Meeting length: ${rules.durationMinutes} minutes. Times are local to ${tz}.`,
+          commitmentTypes.length
+            ? `Commitment types: ${commitmentTypes.map(t => `${t.name} — ${t.condition}`).join('; ')}`
+            : 'No commitment types are defined.',
+          '',
+          'Days:',
+          ...lines,
+        ].join('\n'),
+      }],
+    });
+
+    const block = response.content.find(b => b.type === 'tool_use');
+    if (!block) return unchanged;
+
+    // Match drops back to real slots; anything unrecognised is ignored rather
+    // than guessed at.
+    const dropKeys = new Set((block.input.drops || []).map(d => `${d.date} ${d.time}`));
+    const drops = [];
+    const filtered = days
+      .map(day => {
+        const kept = day.slots.filter(slot => {
+          const key = `${localDate(slot.start, tz)} ${localTime(slot.start, tz)}`;
+          if (!dropKeys.has(key)) return true;
+          const match = (block.input.drops || []).find(d => `${d.date} ${d.time}` === key);
+          drops.push({ start: slot.start, reason: match?.reason || '' });
+          return false;
+        });
+        return { ...day, slots: kept };
+      })
+      .filter(day => day.slots.length);
+
+    return { days: filtered, drops, note: block.input.note || null, reviewed: true };
+  } catch (err) {
+    console.error('[scheduling] slot review failed:', err.message);
+    return unchanged;
+  }
+}

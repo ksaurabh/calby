@@ -334,6 +334,22 @@ export function cacheReport(event, commitmentTypes, report) {
   cacheSet(cacheKey('report', typesFingerprint(commitmentTypes), event), report);
 }
 
+// ---------------------------------------------------------------------------
+// Slot-review cache, keyed by the caller's own fingerprint
+// ---------------------------------------------------------------------------
+export function cachedSlotReview(key) {
+  return cacheGet(`review:${key}`);
+}
+
+export function cacheSlotReview(key, value) {
+  cacheSet(`review:${key}`, value);
+}
+
+/** Stable short hash, for callers building their own cache keys. */
+export function fingerprintOf(value) {
+  return sha(typeof value === 'string' ? value : JSON.stringify(value));
+}
+
 /** Test/maintenance hook: forget everything. */
 export function clearClassificationCache() {
   cache = new Map();

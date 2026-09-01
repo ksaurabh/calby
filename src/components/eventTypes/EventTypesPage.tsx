@@ -7,6 +7,7 @@ import type {
   SlotDay,
 } from '../../types';
 import { api } from '../../utils/api';
+import { formatDateTime } from '../../utils/format';
 import { Button, Modal } from '../common';
 import { AvailabilityCalendar } from '../calendar';
 import { EventTypeForm } from './EventTypeForm';
@@ -51,6 +52,8 @@ export function EventTypesPage() {
     events: CalendarEvent[];
     commitmentTypes: CommitmentType[];
     durationMinutes: number;
+    reviewNote: string | null;
+    drops: { start: string; reason: string }[];
   } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -138,9 +141,9 @@ export function EventTypesPage() {
   const showPreview = async (eventType: EventType, durationMinutes?: number) => {
     setError(null);
     try {
-      const { days, events, commitmentTypes, durationMinutes: used } =
+      const { days, events, commitmentTypes, durationMinutes: used, reviewNote, drops } =
         await api.eventTypeAvailability(eventType.id, durationMinutes);
-      setPreview({ eventType, days, events, commitmentTypes, durationMinutes: used });
+      setPreview({ eventType, days, events, commitmentTypes, durationMinutes: used, reviewNote, drops });
     } catch (e) {
       setError((e as Error).message);
     }
@@ -302,6 +305,24 @@ export function EventTypesPage() {
                 ))}
               </div>
             )}
+            {preview.reviewNote && (
+              <div className="mb-4 rounded-lg bg-blue-50 text-blue-900 px-4 py-3 text-sm">
+                <span className="font-medium">Commitment-aware review:</span> {preview.reviewNote}
+                {preview.drops.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-xs text-blue-800">
+                    {preview.drops.slice(0, 8).map(drop => (
+                      <li key={drop.start}>
+                        · {formatDateTime(drop.start, preview.eventType.rules.timezone)} — {drop.reason}
+                      </li>
+                    ))}
+                    {preview.drops.length > 8 && (
+                      <li>· and {preview.drops.length - 8} more</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            )}
+
             {preview.days.length === 0 && (
               <p className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-4">
                 No open slots in the next {preview.eventType.rules.horizonWeeks} week(s) — your

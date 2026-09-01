@@ -24,9 +24,18 @@ import {
 import {
   generateSlots,
   interpretGuidance,
+  reviewSlots,
   slotIsAvailable,
 } from './scheduling.js';
-import { cacheReport, cachedReport, classifyEvents, splitCached } from './classify.js';
+import {
+  cacheReport,
+  cacheSlotReview,
+  cachedReport,
+  cachedSlotReview,
+  classifyEvents,
+  fingerprintOf,
+  splitCached,
+} from './classify.js';
 import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 
@@ -441,7 +450,15 @@ function saveCalendarFor(email, calendar) {
 
 // Busy time + open slots for one event type. Shared by the owner's preview and
 // the public booking page.
-async function availabilityFor(eventType, { ignoreBookingId = null, durationMinutes = null } = {}) {
+// `review` controls the commitment-aware pass over the candidate slots:
+//   'compute' — run it (and cache the result). Used by the owner's own preview.
+//   'cached'  — apply a cached review if one exists, never call the model.
+// Public booking pages use 'cached' so a stranger loading a link can never
+// trigger a model call, and the page stays fast.
+async function availabilityFor(
+  eventType,
+  { ignoreBookingId = null, durationMinutes = null, review = 'cached' } = {}
+) {
   const calendar = calendarFor(eventType.ownerEmail);
   if (!calendar?.refreshToken) {
     const err = new Error('The owner has not connected a calendar yet.');
@@ -460,10 +477,56 @@ async function availabilityFor(eventType, { ignoreBookingId = null, durationMinu
     .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
-  return {
-    days: generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes }),
-    token,
-  };
+  const days = generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes });
+  const apiKey = anthropicKeyFor(eventType.ownerEmail).key;
+  if (!apiKey || !days.length) return { days, token, reviewNote: null, drops: [] };
+
+  // What the surrounding commitments are, so the review can reason about them.
+  const events = await fetchEvents(token, now, horizonEnd);
+  const commitmentTypes = getCommitmentTypes(eventType.ownerEmail);
+  const { assignments } =
+    review === 'compute'
+      ? await classifyEvents(events, commitmentTypes, { apiKey })
+      : splitCached(events, commitmentTypes);
+
+  // Same inputs, same answer — so the whole thing is cached under one key that
+  // covers the guidance, the slots on offer, and the classified commitments.
+  const cacheKey = fingerprintOf({
+    guidance: eventType.guidance,
+    rules: eventType.rules,
+    duration: durationMinutes || eventType.rules.durationMinutes,
+    slots: days.flatMap(d => d.slots.map(s => s.start)),
+    events: events.map(e => `${e.id}:${e.start}:${e.end}:${e.summary}:${assignments.get(e.id) || ''}`),
+    types: commitmentTypes.map(t => `${t.id}:${t.condition}`),
+  });
+
+  const cached = cachedSlotReview(cacheKey);
+  if (cached) {
+    const dropped = new Set(cached.drops.map(d => d.start));
+    return {
+      days: days
+        .map(day => ({ ...day, slots: day.slots.filter(s => !dropped.has(s.start)) }))
+        .filter(day => day.slots.length),
+      token,
+      reviewNote: cached.note,
+      drops: cached.drops,
+    };
+  }
+  if (review !== 'compute') return { days, token, reviewNote: null, drops: [] };
+
+  const result = await reviewSlots({
+    guidance: eventType.guidance,
+    rules: eventType.rules,
+    days,
+    events,
+    commitmentTypes,
+    assignments,
+    apiKey,
+  });
+  if (result.reviewed) {
+    cacheSlotReview(cacheKey, { drops: result.drops, note: result.note });
+  }
+  return { days: result.days, token, reviewNote: result.note, drops: result.drops };
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1132,10 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
   if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
 
   try {
-    const { days, token } = await availabilityFor(eventType, { durationMinutes });
+    const { days, token, reviewNote, drops } = await availabilityFor(eventType, {
+      durationMinutes,
+      review: 'compute',
+    });
     const now = new Date();
     const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
     // Event titles are the owner's own data — this route is behind requireAuth
@@ -1089,6 +1155,9 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
       events: labelled,
       commitmentTypes,
       durationMinutes,
+      // What the commitment-aware review did to the candidate slots.
+      reviewNote,
+      drops,
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
