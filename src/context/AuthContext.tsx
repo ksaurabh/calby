@@ -20,6 +20,10 @@ interface AuthState {
   needsRoleChoice: boolean;
   isAdmin: boolean;
   isSuperAdmin: boolean;
+  /** True for platform admins and for org admins (who manage their own domain). */
+  canManageUsers: boolean;
+  /** Names of the orgs this user is the claimed admin of. */
+  orgAdminOf: string[];
 }
 
 interface AuthContextType extends AuthState {
@@ -40,6 +44,8 @@ const initialState: AuthState = {
   needsRoleChoice: false,
   isAdmin: false,
   isSuperAdmin: false,
+  canManageUsers: false,
+  orgAdminOf: [],
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -62,6 +68,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         needsRoleChoice: data.needsRoleChoice || false,
         isAdmin: data.isAdmin || false,
         isSuperAdmin: data.isSuperAdmin || false,
+        canManageUsers: data.canManageUsers || false,
+        orgAdminOf: data.orgAdminOf || [],
       });
     } catch (error) {
       console.error('Auth check failed:', error);

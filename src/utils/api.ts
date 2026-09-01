@@ -41,7 +41,20 @@ export const api = {
     request<{ success: boolean }>(`/api/orgs/${id}`, { method: 'DELETE' }),
 
   // Users
-  listUsers: () => request<{ users: User[] }>('/api/users'),
+  listUsers: () =>
+    request<{ users: User[]; scopedToDomains: string[] | null }>('/api/users'),
+
+  createUser: (data: { email: string; name: string }) =>
+    request<User & { canSignIn: boolean }>('/api/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteUser: (email: string) =>
+    request<{ success: boolean; releasedOrgs: boolean }>(
+      `/api/users/${encodeURIComponent(email)}`,
+      { method: 'DELETE' }
+    ),
 
   setUserRole: (email: string, role: 'user' | 'admin') =>
     request<User>(`/api/users/${encodeURIComponent(email)}/role`, {

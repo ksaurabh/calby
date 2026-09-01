@@ -193,6 +193,60 @@ function saveOrgs(orgs) {
   writeFileSync(ORGS_FILE, JSON.stringify({ orgs }, null, 2));
 }
 
+// Claim any unclaimed org whose domain matches this email, making the signer-in
+// its admin. Called on a real sign-in only (the OAuth callback) — not on every
+// /auth/user session check, so the creator doesn't claim their own org simply by
+// having the page open when it is created.
+// Returns the orgs claimed, for logging.
+function claimOrgsOnLogin(email) {
+  const domain = email?.split('@')[1]?.toLowerCase();
+  if (!domain) return [];
+
+  const orgs = getOrgs();
+  const now = new Date().toISOString();
+  const claimed = [];
+  for (const org of orgs) {
+    if (org.domain === domain && !org.adminEmail) {
+      org.adminEmail = email.toLowerCase();
+      org.adminClaimedAt = now;
+      org.updatedAt = now;
+      claimed.push(org.name);
+    }
+  }
+  if (claimed.length) saveOrgs(orgs);
+  return claimed;
+}
+
+// Whether this user administers the org: its claimed admin, its creator, or a
+// platform admin.
+function canManageOrg(req, org) {
+  const email = req.user?.email?.toLowerCase();
+  return org.adminEmail === email || org.createdBy === email || isActiveAdmin(req);
+}
+
+// Orgs this user is the claimed admin of.
+function orgsAdministeredBy(email) {
+  const e = email?.toLowerCase();
+  return e ? getOrgs().filter(o => o.adminEmail === e) : [];
+}
+
+// Email domains whose users an org admin may manage.
+function administeredDomains(email) {
+  return [...new Set(orgsAdministeredBy(email).map(o => o.domain).filter(Boolean))];
+}
+
+// Platform admins manage everyone; an org admin manages users on their org's
+// email domain.
+function canManageUsers(req) {
+  return isActiveAdmin(req) || administeredDomains(req.user?.email).length > 0;
+}
+
+function canManageUser(req, targetEmail) {
+  if (isActiveAdmin(req)) return true;
+  const domain = targetEmail?.split('@')[1]?.toLowerCase();
+  return !!domain && administeredDomains(req.user?.email).includes(domain);
+}
+
 // A URL-safe slug derived from the org name, e.g. "Acme Corp." -> "acme-corp".
 function slugify(name) {
   return name
@@ -201,6 +255,8 @@ function slugify(name) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -253,6 +309,13 @@ app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'em
 app.get('/auth/google/callback',
   passport.authenticate('google', { failureRedirect: '/auth/failure' }),
   (req, res) => {
+    // A genuine sign-in: hand this user any unclaimed org on their domain.
+    if (isUserAllowed(req.user)) {
+      const claimed = claimOrgsOnLogin(req.user.email);
+      if (claimed.length) {
+        console.log(`${req.user.email} is now admin of: ${claimed.join(', ')}`);
+      }
+    }
     const clientUrl = process.env.CLIENT_URL || 'http://localhost:5178';
     res.redirect(`${clientUrl}/auth/callback`);
   }
@@ -304,6 +367,10 @@ app.get('/auth/user', (req, res) => {
     needsRoleChoice: allowed && roles.length > 1 && !req.session.activeRole,
     isAdmin: role === 'admin' || role === 'super_admin',
     isSuperAdmin: role === 'super_admin',
+    // Org admins can manage users on their org's domain without being platform
+    // admins, so the frontend needs this separately from isAdmin.
+    canManageUsers: allowed && canManageUsers(req),
+    orgAdminOf: allowed ? orgsAdministeredBy(req.user.email).map(o => o.name) : [],
   });
 });
 
@@ -373,6 +440,10 @@ app.post('/api/orgs', requireAuth, (req, res) => {
     name,
     slug,
     domain,
+    // Claimed by the first person with a matching email domain to sign in.
+    // An org with no domain stays unclaimed; its creator still manages it.
+    adminEmail: null,
+    adminClaimedAt: null,
     createdBy: req.user.email,
     createdAt: now,
     updatedAt: now,
@@ -386,8 +457,8 @@ app.put('/api/orgs/:id', requireAuth, (req, res) => {
   const orgs = getOrgs();
   const index = orgs.findIndex(o => o.id === req.params.id);
   if (index < 0) return res.status(404).json({ error: 'Organization not found' });
-  if (orgs[index].createdBy !== req.user.email && !isActiveAdmin(req)) {
-    return res.status(403).json({ error: 'Only the creator or an admin can edit this organization' });
+  if (!canManageOrg(req, orgs[index])) {
+    return res.status(403).json({ error: 'Only this organization\'s admin can edit it' });
   }
 
   const name = req.body.name?.trim() || orgs[index].name;
@@ -412,8 +483,8 @@ app.delete('/api/orgs/:id', requireAuth, (req, res) => {
   const orgs = getOrgs();
   const org = orgs.find(o => o.id === req.params.id);
   if (!org) return res.status(404).json({ error: 'Organization not found' });
-  if (org.createdBy !== req.user.email && !isActiveAdmin(req)) {
-    return res.status(403).json({ error: 'Only the creator or an admin can delete this organization' });
+  if (!canManageOrg(req, org)) {
+    return res.status(403).json({ error: 'Only this organization\'s admin can delete it' });
   }
   saveOrgs(orgs.filter(o => o.id !== org.id));
   res.json({ success: true });
@@ -422,9 +493,92 @@ app.delete('/api/orgs/:id', requireAuth, (req, res) => {
 // ---------------------------------------------------------------------------
 // Users (admin)
 // ---------------------------------------------------------------------------
-app.get('/api/users', requireAdmin, (req, res) => {
-  const users = getUsers().map(u => ({ ...u, role: effectiveRole(u.email) }));
-  res.json({ users });
+// Platform admins see every user; an org admin sees only their domain's users.
+app.get('/api/users', requireAuth, (req, res) => {
+  if (!canManageUsers(req)) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  const domains = administeredDomains(req.user.email);
+  const users = getUsers()
+    .filter(u => isActiveAdmin(req) || domains.includes(u.domain))
+    .map(u => ({ ...u, role: effectiveRole(u.email) }));
+  res.json({ users, scopedToDomains: isActiveAdmin(req) ? null : domains });
+});
+
+// Create a user ahead of their first sign-in. They still authenticate with
+// Google; this pre-registers the account (and its name) so it can be listed and
+// given a role before they ever log in.
+app.post('/api/users', requireAuth, (req, res) => {
+  const email = req.body.email?.toLowerCase().trim();
+  const name = req.body.name?.trim() || '';
+
+  if (!email || !EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: 'A valid email is required' });
+  }
+  if (!canManageUsers(req)) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  if (!canManageUser(req, email)) {
+    return res.status(403).json({ error: 'You can only add users on your own organization\'s domain' });
+  }
+  if (findUser(email)) {
+    return res.status(400).json({ error: 'That user already exists' });
+  }
+
+  const domain = email.split('@')[1];
+  const users = getUsers();
+  const user = {
+    id: generateId('user'),
+    email,
+    name: name || email,
+    domain,
+    role: 'user',
+    createdAt: new Date().toISOString(),
+    createdBy: req.user.email,
+    lastLoginAt: null,
+  };
+  users.push(user);
+  saveUsers(users);
+
+  // Sign-in is still gated by the allowed-domain list.
+  res.json({ ...user, canSignIn: isDomainAllowed(email) });
+});
+
+app.delete('/api/users/:email', requireAuth, (req, res) => {
+  const email = req.params.email.toLowerCase();
+
+  if (!canManageUsers(req)) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  if (!canManageUser(req, email)) {
+    return res.status(403).json({ error: 'You can only remove users on your own organization\'s domain' });
+  }
+  if (email === req.user.email.toLowerCase()) {
+    return res.status(400).json({ error: 'You cannot remove your own account' });
+  }
+  if (isSuperAdmin(email)) {
+    return res.status(400).json({ error: 'Super admins are managed in super-admins.json' });
+  }
+
+  const users = getUsers();
+  if (!users.some(u => u.email === email)) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  saveUsers(users.filter(u => u.email !== email));
+
+  // Hand any org they administered back to the next matching sign-in.
+  const orgs = getOrgs();
+  let released = false;
+  for (const org of orgs) {
+    if (org.adminEmail === email) {
+      org.adminEmail = null;
+      org.adminClaimedAt = null;
+      released = true;
+    }
+  }
+  if (released) saveOrgs(orgs);
+
+  res.json({ success: true, releasedOrgs: released });
 });
 
 app.put('/api/users/:email/role', requireSuperAdmin, (req, res) => {

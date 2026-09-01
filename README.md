@@ -11,8 +11,19 @@ A minimal React + Express app: sign in with Google, create organizations.
 - **Google sign-in.** Only accounts on an allowed email domain can use the app.
   `airmdr.com` is always allowed; more domains are added from the Administration
   page (super admin) or by editing `server/allowed-domains.json`.
-- **Organizations.** Any signed-in user can list and create organizations. The
-  creator — or an admin — can rename or delete one.
+- **Organizations.** Any signed-in user can list and create organizations.
+- **Org admins.** A new org is unclaimed. The first person whose email domain
+  matches the org's domain to *sign in* after it was created becomes its admin —
+  claiming happens on the Google callback, not on a session refresh, so the
+  creator doesn't claim their own org just by having the page open. An org with
+  no domain is never claimed; its creator continues to manage it. An org admin
+  can rename or delete their org and manage users on its domain, without being a
+  platform admin.
+- **User management.** Platform admins can add or remove any user; an org admin
+  can add or remove users on their own org's domain. Adding a user
+  pre-registers the account — they still authenticate with Google, and their
+  domain must be allowed for sign-in to work. Removing a user releases any org
+  they administered, which the next matching sign-in then claims.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -66,9 +77,11 @@ All routes require an authenticated session on an allowed domain.
 | POST | `/api/session/role` | user | Choose the role to act as this session |
 | GET | `/api/orgs` | user | List organizations |
 | POST | `/api/orgs` | user | Create an organization |
-| PUT | `/api/orgs/:id` | creator/admin | Rename an organization |
-| DELETE | `/api/orgs/:id` | creator/admin | Delete an organization |
-| GET | `/api/users` | admin | List users |
+| PUT | `/api/orgs/:id` | org admin/creator/admin | Rename an organization |
+| DELETE | `/api/orgs/:id` | org admin/creator/admin | Delete an organization |
+| GET | `/api/users` | admin, org admin | List users (org admins see their domain only) |
+| POST | `/api/users` | admin, org admin | Pre-register a user |
+| DELETE | `/api/users/:email` | admin, org admin | Remove a user |
 | PUT | `/api/users/:email/role` | super admin | Grant/revoke admin |
 | GET | `/api/domains` | admin | List allowed domains |
 | POST | `/api/domains` | super admin | Allow a domain |

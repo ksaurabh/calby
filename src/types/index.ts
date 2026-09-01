@@ -8,6 +8,7 @@ export interface User {
   domain?: string;
   role: Role;
   createdAt?: string;
+  createdBy?: string;
   lastLoginAt?: string | null;
 }
 
@@ -16,6 +17,9 @@ export interface Org {
   name: string;
   slug: string;
   domain: string;
+  /** First person on the org's domain to sign in after it was created. */
+  adminEmail: string | null;
+  adminClaimedAt: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

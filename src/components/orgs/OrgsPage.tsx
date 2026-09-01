@@ -16,7 +16,27 @@ export function OrgsPage() {
     fetchOrgs();
   }, [fetchOrgs]);
 
-  const canModify = (org: Org) => isAdmin || org.createdBy === user?.email;
+  // Mirrors canManageOrg() on the server.
+  const canModify = (org: Org) =>
+    isAdmin || org.adminEmail === user?.email || org.createdBy === user?.email;
+
+  const adminCell = (org: Org) => {
+    if (org.adminEmail) {
+      return (
+        <span className={org.adminEmail === user?.email ? 'text-gray-900 font-medium' : ''}>
+          {org.adminEmail}
+          {org.adminEmail === user?.email && <span className="text-gray-400 font-normal"> (you)</span>}
+        </span>
+      );
+    }
+    return org.domain ? (
+      <span className="text-amber-600">
+        Unclaimed — first <span className="font-medium">@{org.domain}</span> sign-in
+      </span>
+    ) : (
+      <span className="text-gray-400">No domain — cannot be claimed</span>
+    );
+  };
 
   const closeForm = () => {
     setShowForm(false);
@@ -42,7 +62,10 @@ export function OrgsPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Organizations</h1>
-          <p className="text-sm text-gray-500 mt-1">{orgs.length} total</p>
+          <p className="text-sm text-gray-500 mt-1">
+            {orgs.length} total — an org is administered by the first person on its
+            email domain to sign in after it is created.
+          </p>
         </div>
         <Button onClick={() => { setEditing(null); setShowForm(true); }}>+ New organization</Button>
       </div>
@@ -64,6 +87,7 @@ export function OrgsPage() {
               <tr>
                 <th className="px-6 py-3 font-medium">Name</th>
                 <th className="px-6 py-3 font-medium">Domain</th>
+                <th className="px-6 py-3 font-medium">Org admin</th>
                 <th className="px-6 py-3 font-medium">Created by</th>
                 <th className="px-6 py-3 font-medium">Created</th>
                 <th className="px-6 py-3" />
@@ -77,6 +101,7 @@ export function OrgsPage() {
                     <div className="text-xs text-gray-400">{org.slug}</div>
                   </td>
                   <td className="px-6 py-3 text-gray-600">{org.domain || '—'}</td>
+                  <td className="px-6 py-3 text-gray-600">{adminCell(org)}</td>
                   <td className="px-6 py-3 text-gray-600">{org.createdBy}</td>
                   <td className="px-6 py-3 text-gray-600">{formatDate(org.createdAt)}</td>
                   <td className="px-6 py-3 text-right whitespace-nowrap">

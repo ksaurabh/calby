@@ -17,7 +17,7 @@ function pathFromView(view: View): string {
 }
 
 function AppContent() {
-  const { isLoading, isAuthenticated, isAllowed, isAdmin, needsRoleChoice } = useAuth();
+  const { isLoading, isAuthenticated, isAllowed, isAdmin, canManageUsers, needsRoleChoice } = useAuth();
 
   const [currentView, setCurrentViewState] = useState<View>(() => viewFromPath(window.location.pathname));
 
@@ -54,8 +54,9 @@ function AppContent() {
   // Privileged accounts choose which role to act as before entering the app.
   if (needsRoleChoice) return <RolePicker />;
 
-  // Guard the admin-only view
-  const effectiveView: View = currentView === 'admin' && !isAdmin ? 'orgs' : currentView;
+  // Guard the admin view — platform admins and org admins may open it
+  const canAdminister = isAdmin || canManageUsers;
+  const effectiveView: View = currentView === 'admin' && !canAdminister ? 'orgs' : currentView;
 
   return (
     <Layout currentView={effectiveView} onViewChange={setCurrentView}>

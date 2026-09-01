@@ -5,12 +5,13 @@ interface NavItem {
   view: View;
   label: string;
   icon: string;
-  adminOnly?: boolean;
+  /** Shown to platform admins and to org admins, who manage their own users. */
+  managersOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { view: 'orgs', label: 'Organizations', icon: '▦' },
-  { view: 'admin', label: 'Administration', icon: '⚙', adminOnly: true },
+  { view: 'admin', label: 'Administration', icon: '⚙', managersOnly: true },
 ];
 
 interface SidebarProps {
@@ -19,9 +20,11 @@ interface SidebarProps {
 }
 
 export function Sidebar({ currentView, onViewChange }: SidebarProps) {
-  const { isAdmin } = useAuth();
+  const { isAdmin, canManageUsers } = useAuth();
 
-  const items = NAV_ITEMS.filter(item => (item.adminOnly ? isAdmin : true));
+  const items = NAV_ITEMS.filter(item =>
+    item.managersOnly ? isAdmin || canManageUsers : true
+  );
 
   return (
     <aside className="w-56 bg-white border-r border-gray-200 flex-shrink-0 hidden md:block">
