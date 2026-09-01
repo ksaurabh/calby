@@ -27,6 +27,7 @@ import {
   reviewSlots,
   slotIsAvailable,
 } from './scheduling.js';
+import { usageEntries } from './llm.js';
 import {
   cacheReport,
   cacheSlotReview,
@@ -486,7 +487,7 @@ async function availabilityFor(
   const commitmentTypes = getCommitmentTypes(eventType.ownerEmail);
   const { assignments } =
     review === 'compute'
-      ? await classifyEvents(events, commitmentTypes, { apiKey })
+      ? await classifyEvents(events, commitmentTypes, { apiKey, email: eventType.ownerEmail })
       : splitCached(events, commitmentTypes);
 
   // Same inputs, same answer — so the whole thing is cached under one key that
@@ -522,6 +523,7 @@ async function availabilityFor(
     commitmentTypes,
     assignments,
     apiKey,
+    email: eventType.ownerEmail,
   });
   if (result.reviewed) {
     cacheSlotReview(cacheKey, { drops: result.drops, note: result.note });
@@ -1045,9 +1047,12 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'A name is required' });
   if (!guidance) return res.status(400).json({ error: 'Guidance is required — describe when people may book you' });
 
+  const key = anthropicKeyFor(req.user.email);
   const { rules, source } = await interpretGuidance(guidance, {
     timezone: req.body.timezone,
-    apiKey: anthropicKeyFor(req.user.email).key,
+    apiKey: key.key,
+    email: req.user.email,
+    keySource: key.source,
   });
   const now = new Date().toISOString();
   const eventTypes = getEventTypes();
@@ -1085,9 +1090,12 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
   // Re-read the guidance only when it actually changed — one model call per edit.
   let { rules, rulesSource, rulesUpdatedAt } = current;
   if (guidance !== current.guidance) {
+    const key = anthropicKeyFor(req.user.email);
     const interpreted = await interpretGuidance(guidance, {
       timezone: current.rules.timezone,
-      apiKey: anthropicKeyFor(req.user.email).key,
+      apiKey: key.key,
+      email: req.user.email,
+      keySource: key.source,
     });
     rules = interpreted.rules;
     rulesSource = interpreted.source;
@@ -1144,8 +1152,11 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
+    const key = anthropicKeyFor(req.user.email);
     const { assignments } = await classifyEvents(events, commitmentTypes, {
-      apiKey: anthropicKeyFor(req.user.email).key,
+      apiKey: key.key,
+      email: req.user.email,
+      keySource: key.source,
     });
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
@@ -1480,9 +1491,12 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   }
   const token = await accessTokenFor(req.user.email, calendar.refreshToken);
   const events = await fetchEvents(token, from, to, { maxResults });
+  const key = anthropicKeyFor(req.user.email);
   const commitmentTypes = getCommitmentTypes(req.user.email);
   const { assignments, stats } = await classifyEvents(events, commitmentTypes, {
-    apiKey: anthropicKeyFor(req.user.email).key,
+    apiKey: key.key,
+    email: req.user.email,
+    keySource: key.source,
   });
   return { events, commitmentTypes, assignments, stats };
 }
@@ -1537,8 +1551,11 @@ app.post('/api/calendar/classify', requireAuth, async (req, res) => {
   // Runs past this response; the client polls /api/calendar/classify/:jobId.
   (async () => {
     try {
+      const key = anthropicKeyFor(req.user.email);
       const { assignments } = await classifyEvents(events, commitmentTypes, {
-        apiKey: anthropicKeyFor(req.user.email).key,
+        apiKey: key.key,
+        email: req.user.email,
+        keySource: key.source,
         // The accumulated map is handed in: referring to the awaited result
         // from here would hit it before it is assigned.
         onProgress: (done, _total, assignments) => {
@@ -1626,11 +1643,14 @@ app.post('/api/calendar/ask', requireAuth, async (req, res) => {
     const { events, commitmentTypes, assignments } = await ownerEvents(req, { from, to });
     const timezone = ownerTimezone(req.user.email);
     const context = buildCalendarContext({ events, timezone, commitmentTypes, assignments });
+    const askKey = anthropicKeyFor(req.user.email);
     const answer = await askCalendar({
       question,
       context,
       history: Array.isArray(req.body.history) ? req.body.history : [],
-      apiKey: anthropicKeyFor(req.user.email).key,
+      apiKey: askKey.key,
+      email: req.user.email,
+      keySource: askKey.source,
     });
     res.json({ answer, eventsConsidered: events.length, timezone });
   } catch (err) {
@@ -1656,11 +1676,14 @@ app.post('/api/calendar/explain', requireAuth, async (req, res) => {
     const cached = cachedReport(event, commitmentTypes);
     if (cached) return res.json({ event, ...cached, cached: true });
 
+    const explainKey = anthropicKeyFor(req.user.email);
     const report = await explainEventMatch({
       event,
       commitmentTypes,
       timezone: ownerTimezone(req.user.email),
-      apiKey: anthropicKeyFor(req.user.email).key,
+      apiKey: explainKey.key,
+      email: req.user.email,
+      keySource: explainKey.source,
     });
     // Stored with the report, so a cached answer still says when it was worked out.
     report.calculatedAt = new Date().toISOString();
@@ -1739,6 +1762,68 @@ app.delete('/api/commitment-types/:id', requireAuth, (req, res) => {
   if (!exists) return res.status(404).json({ error: 'Commitment type not found' });
   saveCommitmentTypes(all.filter(t => t.id !== req.params.id));
   res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// LLM cost
+// ---------------------------------------------------------------------------
+// Local calendar date for an instant, so daily totals line up with the user's
+// idea of a day rather than UTC's.
+function localDay(iso, timeZone) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(iso));
+}
+
+app.get('/api/usage', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const domain = email.split('@')[1];
+  // Org admins and platform admins can see the whole organization's spend;
+  // everyone else sees their own.
+  const canSeeOrg = isActiveAdmin(req) || administeredDomains(email).includes(domain);
+  const scope = req.query.scope === 'org' && canSeeOrg ? 'org' : 'me';
+
+  const timezone = ownerTimezone(email);
+  const mine = usageEntries().filter(e =>
+    scope === 'org' ? e.domain === domain : e.email === email
+  );
+
+  const dayCount = Math.min(365, Math.max(1, Number(req.query.days) || 90));
+  const since = Date.now() - dayCount * 86400_000;
+  const windowed = mine.filter(e => Date.parse(e.at) >= since);
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const last24h = windowed.filter(e => Date.parse(e.at) >= Date.now() - dayMs);
+
+  const byDay = new Map();
+  const byFeature = new Map();
+  for (const entry of windowed) {
+    const day = localDay(entry.at, timezone);
+    const bucket = byDay.get(day) || { date: day, costUsd: 0, calls: 0, inputTokens: 0, outputTokens: 0 };
+    bucket.costUsd += entry.costUsd;
+    bucket.calls += 1;
+    bucket.inputTokens += entry.input + entry.cacheWrite + entry.cacheRead;
+    bucket.outputTokens += entry.output;
+    byDay.set(day, bucket);
+
+    const feature = byFeature.get(entry.feature) || { feature: entry.feature, costUsd: 0, calls: 0 };
+    feature.costUsd += entry.costUsd;
+    feature.calls += 1;
+    byFeature.set(entry.feature, feature);
+  }
+
+  const sum = list => list.reduce((total, e) => total + e.costUsd, 0);
+
+  res.json({
+    scope,
+    canSeeOrg,
+    timezone,
+    days: dayCount,
+    last24h: { costUsd: sum(last24h), calls: last24h.length },
+    total: { costUsd: sum(windowed), calls: windowed.length },
+    daily: [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    byFeature: [...byFeature.values()].sort((a, b) => b.costUsd - a.costUsd),
+  });
 });
 
 // ---------------------------------------------------------------------------

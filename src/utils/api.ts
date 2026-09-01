@@ -100,6 +100,19 @@ export const api = {
       body: JSON.stringify({ eventId }),
     }),
 
+  // LLM cost
+  usage: (scope: 'me' | 'org' = 'me') =>
+    request<{
+      scope: 'me' | 'org';
+      canSeeOrg: boolean;
+      timezone: string;
+      days: number;
+      last24h: { costUsd: number; calls: number };
+      total: { costUsd: number; calls: number };
+      daily: { date: string; costUsd: number; calls: number; inputTokens: number; outputTokens: number }[];
+      byFeature: { feature: string; costUsd: number; calls: number }[];
+    }>(`/api/usage?scope=${scope}`),
+
   // Commitment types
   listCommitmentTypes: () =>
     request<{ commitmentTypes: CommitmentType[]; colors: string[] }>('/api/commitment-types'),

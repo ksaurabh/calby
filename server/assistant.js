@@ -1,7 +1,7 @@
 // The calendar assistant: answers questions about what is actually on the
 // owner's calendar. Events are rendered into a compact transcript and handed to
 // Claude with the question — the model never calls Google directly.
-import Anthropic from '@anthropic-ai/sdk';
+import { callClaude } from './llm.js';
 
 const SYSTEM_PROMPT = `You answer questions about one person's calendar.
 
@@ -139,7 +139,7 @@ const EXPLAIN_SCHEMA = {
  * A report explaining, for every commitment type, whether the event satisfies
  * it and why. Returns { summary, verdicts: [...] }.
  */
-export async function explainEventMatch({ event, commitmentTypes, timezone, apiKey }) {
+export async function explainEventMatch({ event, commitmentTypes, timezone, apiKey, email, keySource }) {
   if (!commitmentTypes.length) {
     return { summary: 'No commitment types are defined yet.', verdicts: [] };
   }
@@ -151,8 +151,7 @@ export async function explainEventMatch({ event, commitmentTypes, timezone, apiK
     throw err;
   }
 
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
+  const response = await callClaude({
     model: 'claude-opus-5',
     max_tokens: 8000,
     system: EXPLAIN_SYSTEM,
@@ -173,7 +172,7 @@ export async function explainEventMatch({ event, commitmentTypes, timezone, apiK
         renderEvent(event, timezone, null),
       ].join('\n'),
     }],
-  });
+  }, { apiKey, email, keySource, feature: 'commitment-report' });
 
   const block = response.content.find(b => b.type === 'tool_use');
   if (!block) throw new Error('The model did not return a report.');
@@ -203,7 +202,7 @@ export async function explainEventMatch({ event, commitmentTypes, timezone, apiK
  * Answer a question about the calendar. `history` is prior turns as
  * [{ role: 'user' | 'assistant', content }]. Returns the answer text.
  */
-export async function askCalendar({ question, context, history = [], apiKey }) {
+export async function askCalendar({ question, context, history = [], apiKey, email, keySource }) {
   if (!apiKey) {
     const err = new Error(
       'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.'
@@ -212,8 +211,7 @@ export async function askCalendar({ question, context, history = [], apiKey }) {
     throw err;
   }
 
-  const client = new Anthropic({ apiKey });
-  const response = await client.messages.create({
+  const response = await callClaude({
     model: 'claude-opus-5',
     max_tokens: 4000,
     system: [
@@ -229,7 +227,7 @@ export async function askCalendar({ question, context, history = [], apiKey }) {
         .map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content: question },
     ],
-  });
+  }, { apiKey, email, keySource, feature: 'assistant' });
 
   return response.content
     .filter(block => block.type === 'text')

@@ -29,10 +29,22 @@ interface AvailabilityCalendarProps {
   commitmentTypes?: CommitmentType[];
   /** When given, meeting blocks become clickable. */
   onSelectEvent?: (event: CalendarEvent) => void;
+  /**
+   * Paging and width can be driven from outside, so two calendars shown side by
+   * side stay on the same days. Left uncontrolled, the calendar manages its own.
+   */
+  daysPerPage?: number;
+  onDaysPerPageChange?: (days: number) => void;
+  pageOffset?: number;
+  onPageOffsetChange?: (offset: number) => void;
+  /** Hide the toolbar when a parent renders a shared one. */
+  showControls?: boolean;
+  /** Render only the toolbar — for driving two calendars from one control row. */
+  controlsOnly?: boolean;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
-const DAYS_PER_PAGE = 7;
+const DAY_OPTIONS = [1, 2, 3, 4, 7];
 
 interface Block {
   key: string;
@@ -68,9 +80,29 @@ export function AvailabilityCalendar({
   window: calendarWindow,
   commitmentTypes = [],
   onSelectEvent,
+  daysPerPage: controlledDaysPerPage,
+  onDaysPerPageChange,
+  pageOffset: controlledOffset,
+  onPageOffsetChange,
+  showControls = true,
+  controlsOnly = false,
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
-  const [pageOffset, setPageOffset] = useState(0);
+  const [ownOffset, setOwnOffset] = useState(0);
+  const [ownDaysPerPage, setOwnDaysPerPage] = useState(7);
+
+  const daysPerPage = controlledDaysPerPage ?? ownDaysPerPage;
+  const pageOffset = controlledOffset ?? ownOffset;
+  const setPageOffset = (next: number) =>
+    onPageOffsetChange ? onPageOffsetChange(next) : setOwnOffset(next);
+  const setDaysPerPage = (next: number) => {
+    // Keep the leftmost day fixed when the width changes, so the view doesn't jump.
+    const firstDay = pageOffset * daysPerPage;
+    const nextOffset = Math.floor(firstDay / next);
+    if (onDaysPerPageChange) onDaysPerPageChange(next);
+    else setOwnDaysPerPage(next);
+    setPageOffset(nextOffset);
+  };
 
   const typeById = useMemo(
     () => new Map(commitmentTypes.map(t => [t.id, t])),
@@ -107,9 +139,9 @@ export function AvailabilityCalendar({
     return map;
   }, [events]);
 
-  const dateKeys = dateKeyRange(tz, pageOffset * DAYS_PER_PAGE, DAYS_PER_PAGE);
+  const dateKeys = dateKeyRange(tz, pageOffset * daysPerPage, daysPerPage);
   const todayKey = todayKeyInZone(tz);
-  const lastPage = Math.max(0, Math.ceil((calendarWindow.weeks * 7) / DAYS_PER_PAGE) - 1);
+  const lastPage = Math.max(0, Math.ceil((calendarWindow.weeks * 7) / daysPerPage) - 1);
 
   // Vertical range: the bookable window, widened to include any meeting that
   // falls outside it, so nothing on the calendar is silently cropped.
@@ -174,25 +206,49 @@ export function AvailabilityCalendar({
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={() => setPageOffset(p => Math.max(0, p - 1))} disabled={pageOffset === 0}>
-            ← Earlier
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => setPageOffset(p => Math.min(lastPage, p + 1))}
-            disabled={pageOffset >= lastPage}
-          >
-            Later →
-          </Button>
-        </div>
-        <div className="text-xs text-gray-500">
-          {days.length > 0 && `${openCount} open slot${openCount === 1 ? '' : 's'} this week · `}
-          times in {tz}
-        </div>
-      </div>
+      {showControls && (
+        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setPageOffset(Math.max(0, pageOffset - 1))}
+              disabled={pageOffset === 0}
+            >
+              ← Earlier
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setPageOffset(Math.min(lastPage, pageOffset + 1))}
+              disabled={pageOffset >= lastPage}
+            >
+              Later →
+            </Button>
 
+            <div className="flex gap-1 ml-2">
+              {DAY_OPTIONS.map(option => (
+                <button
+                  key={option}
+                  onClick={() => setDaysPerPage(option)}
+                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
+                    daysPerPage === option
+                      ? 'border-gray-900 bg-gray-900 text-white'
+                      : 'border-gray-300 text-gray-600 hover:border-gray-500'
+                  }`}
+                >
+                  {option === 7 ? 'Week' : `${option}d`}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">
+            {days.length > 0 &&
+              `${openCount} open slot${openCount === 1 ? '' : 's'} shown · `}
+            times in {tz}
+          </div>
+        </div>
+      )}
+
+      {!controlsOnly && (
       <div className="flex items-center gap-4 gap-y-2 mb-3 text-xs text-gray-600 flex-wrap">
         {days.length > 0 && (
           <span className="flex items-center gap-1.5">
@@ -217,9 +273,11 @@ export function AvailabilityCalendar({
           {commitmentTypes.length ? 'No commitment type' : 'Existing meeting'}
         </span>
       </div>
+      )}
 
+      {!controlsOnly && (
       <div className="border border-gray-200 rounded-lg overflow-x-auto">
-        <div className="min-w-[640px]">
+        <div style={{ minWidth: Math.max(280, 90 * daysPerPage + 56) }}>
           {/* Column headers */}
           <div className="flex border-b border-gray-200 bg-gray-50 sticky top-0 z-10">
             <div className="w-14 shrink-0" />
@@ -324,6 +382,7 @@ export function AvailabilityCalendar({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

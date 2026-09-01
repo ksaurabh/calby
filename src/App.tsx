@@ -6,6 +6,7 @@ import { Layout } from './components/layout';
 import { OrgsPage } from './components/orgs';
 import { EventTypesPage } from './components/eventTypes';
 import { CommitmentTypesPage } from './components/commitments';
+import { SettingsPage } from './components/settings';
 import { BookingPage, ManageBookingPage } from './components/booking';
 import { AdminPage } from './components/admin';
 import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './components/auth';
@@ -82,6 +83,7 @@ function AppContent() {
       {effectiveView === 'orgs' && <OrgsPage />}
       {effectiveView === 'event-types' && <EventTypesPage />}
       {effectiveView === 'commitments' && <CommitmentTypesPage />}
+      {effectiveView === 'settings' && <SettingsPage />}
       {effectiveView === 'admin' && <AdminPage />}
     </Layout>
   );

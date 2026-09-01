@@ -5,7 +5,7 @@
 // Claude reads the guidance once (when the event type is saved) and produces
 // structured rules; slot generation itself is deterministic, so a booking page
 // never depends on a model call and stays fast and predictable.
-import Anthropic from '@anthropic-ai/sdk';
+import { callClaude } from './llm.js';
 
 export const DEFAULT_RULES = {
   // The default length. durationOptions holds every length on offer; when it has
@@ -174,7 +174,7 @@ export function rulesFromText(guidance = '') {
 
 // Ask Claude to read the guidance. Falls back to rulesFromText on any failure so
 // saving an event type never breaks because of the model or a missing key.
-export async function interpretGuidance(guidance, { timezone, apiKey } = {}) {
+export async function interpretGuidance(guidance, { timezone, apiKey, email, keySource } = {}) {
   // The caller passes the owner's own timezone; keep it unless the model
   // overrides it from the guidance text.
   const fallback = () => ({
@@ -184,8 +184,7 @@ export async function interpretGuidance(guidance, { timezone, apiKey } = {}) {
   if (!apiKey) return fallback();
 
   try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
+    const response = await callClaude({
       model: 'claude-opus-5',
       max_tokens: 4000,
       system: SYSTEM_PROMPT,
@@ -200,7 +199,7 @@ export async function interpretGuidance(guidance, { timezone, apiKey } = {}) {
         role: 'user',
         content: `The person's calendar timezone is ${timezone || DEFAULT_RULES.timezone}.\n\nAvailability guidance:\n"""\n${guidance}\n"""`,
       }],
-    });
+    }, { apiKey, email, keySource, feature: 'guidance' });
 
     const block = response.content.find(b => b.type === 'tool_use');
     if (!block) return fallback();
@@ -387,6 +386,8 @@ export async function reviewSlots({
   commitmentTypes = [],
   assignments = new Map(),
   apiKey,
+  email,
+  keySource,
 }) {
   const unchanged = { days, drops: [], note: null, reviewed: false };
   if (!apiKey || !days.length || !guidance) return unchanged;
@@ -421,8 +422,7 @@ export async function reviewSlots({
   }
 
   try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
+    const response = await callClaude({
       model: 'claude-opus-5',
       max_tokens: 8000,
       system: REVIEW_SYSTEM,
@@ -447,7 +447,7 @@ export async function reviewSlots({
           ...lines,
         ].join('\n'),
       }],
-    });
+    }, { apiKey, email, keySource, feature: 'slot-review' });
 
     const block = response.content.find(b => b.type === 'tool_use');
     if (!block) return unchanged;

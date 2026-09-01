@@ -56,6 +56,9 @@ export function EventTypesPage() {
     drops: { start: string; reason: string }[];
   } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  // Both preview calendars share these so the two sides always show the same days.
+  const [previewDays, setPreviewDays] = useState(3);
+  const [previewOffset, setPreviewOffset] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -329,17 +332,62 @@ export function EventTypesPage() {
                 calendar is full, or the guidance is narrower than you intended.
               </p>
             )}
-            <AvailabilityCalendar
-              days={preview.days}
-              events={preview.events}
-              window={{
+            {(() => {
+              const window = {
                 timezone: preview.eventType.rules.timezone,
                 startMinute: preview.eventType.rules.startMinute,
                 endMinute: preview.eventType.rules.endMinute,
                 weeks: preview.eventType.rules.horizonWeeks,
-              }}
-              commitmentTypes={preview.commitmentTypes}
-            />
+              };
+              const shared = {
+                window,
+                daysPerPage: previewDays,
+                onDaysPerPageChange: setPreviewDays,
+                pageOffset: previewOffset,
+                onPageOffsetChange: setPreviewOffset,
+              };
+              return (
+                <>
+                  {/* One toolbar drives both sides; the calendars themselves hide theirs. */}
+                  <div className="mb-3">
+                    <AvailabilityCalendar
+                      {...shared}
+                      events={[]}
+                      commitmentTypes={preview.commitmentTypes}
+                      controlsOnly
+                    />
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-900 mb-2">
+                        Your calendar
+                        <span className="font-normal text-gray-500"> — what is already booked</span>
+                      </h3>
+                      <AvailabilityCalendar
+                        {...shared}
+                        events={preview.events}
+                        commitmentTypes={preview.commitmentTypes}
+                        onSelectEvent={undefined}
+                        showControls={false}
+                      />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-medium text-gray-900 mb-2">
+                        Open slots
+                        <span className="font-normal text-gray-500"> — what visitors can book</span>
+                      </h3>
+                      <AvailabilityCalendar
+                        {...shared}
+                        events={[]}
+                        days={preview.days}
+                        showControls={false}
+                      />
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </>
         )}
       </Modal>

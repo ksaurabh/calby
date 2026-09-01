@@ -103,6 +103,15 @@ English, and share a booking link that writes real invites to your calendar.
   being saved, encrypted at rest, and never returned to the browser — only a
   masked hint. Users whose org has no key fall back to the server's
   `ANTHROPIC_API_KEY`.
+- **LLM cost.** Every model call is metered — tokens in and out, cache reads and
+  writes — and priced at Anthropic's published rates. **Settings** shows the last
+  24 hours, the 90-day total, a daily bar chart, and a breakdown by feature, with
+  a table view of the same data. Org admins can switch between their own spend
+  and the whole organization's.
+- **Calendar views.** Every calendar can show 1, 2, 3, 4 days or a full week. In
+  the availability preview two calendars sit side by side — your existing
+  meetings on the left, the slots visitors can book on the right — sharing one
+  set of controls so both sides always show the same days.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -176,6 +185,7 @@ All routes require an authenticated session on an allowed domain.
 | GET | `/api/calendar/classify/:jobId` | owner | Progress and colours so far |
 | POST | `/api/calendar/ask` | user | Ask a question about your calendar |
 | POST | `/api/calendar/explain` | user | Report one entry against every type |
+| GET | `/api/usage` | user | LLM cost: last 24h, daily history, by feature |
 | GET | `/api/commitment-types` | user | List your commitment types + palette |
 | POST | `/api/commitment-types` | user | Create one |
 | PUT | `/api/commitment-types/:id` | owner | Update name, condition or colour |
@@ -210,5 +220,6 @@ Created under `server/` at first run and excluded from git:
 - `bookings.json` — bookings taken through booking pages
 - `commitment-types.json` — commitment conditions and their colours
 - `classification-cache.json` — cached commitment verdicts and reports
+- `llm-usage.json` — per-call token usage and cost, kept for 90 days
 - `allowed-domains.json` — extra domains permitted to sign in
 - `super-admins.json` — super admin emails (see `super-admins.example.json`)

@@ -10,7 +10,7 @@
 // asked only about entries it has not already judged. Editing an event (title,
 // time, guests, location) or any commitment type changes the fingerprint and
 // earns a fresh answer.
-import Anthropic from '@anthropic-ai/sdk';
+import { callClaude } from './llm.js';
 import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -237,7 +237,7 @@ export function splitCached(events, commitmentTypes) {
  * `onProgress(done, total, assignments)` after each batch so a caller can report
  * progress — and paint the colours already decided — while the rest runs.
  */
-export async function classifyEvents(events, commitmentTypes, { apiKey, onProgress } = {}) {
+export async function classifyEvents(events, commitmentTypes, { apiKey, onProgress, email, keySource } = {}) {
   // `method` records how the fresh verdicts were reached, so the UI can explain
   // why entries came back grey.
   const stats = { cached: 0, fresh: 0, method: apiKey ? 'model' : 'keyword' };
@@ -252,14 +252,14 @@ export async function classifyEvents(events, commitmentTypes, { apiKey, onProgre
   let done = 0;
   for (let i = 0; i < pending.length; i += BATCH_SIZE) {
     const batch = pending.slice(i, i + BATCH_SIZE);
-    await classifyBatch(batch, commitmentTypes, apiKey, assignments);
+    await classifyBatch(batch, commitmentTypes, apiKey, assignments, { email, keySource });
     done += batch.length;
     onProgress?.(done, pending.length, assignments);
   }
   return { assignments, stats };
 }
 
-async function classifyBatch(unresolved, commitmentTypes, apiKey, assignments) {
+async function classifyBatch(unresolved, commitmentTypes, apiKey, assignments, meta = {}) {
   const version = typesFingerprint(commitmentTypes);
   const validIds = new Set(commitmentTypes.map(t => t.id));
 
@@ -276,8 +276,7 @@ async function classifyBatch(unresolved, commitmentTypes, apiKey, assignments) {
   if (!apiKey) return applyFallback();
 
   try {
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
+    const response = await callClaude({
       model: 'claude-opus-5',
       max_tokens: 8000,
       system: SYSTEM_PROMPT,
@@ -298,7 +297,7 @@ async function classifyBatch(unresolved, commitmentTypes, apiKey, assignments) {
           ...unresolved.map(describe),
         ].join('\n'),
       }],
-    });
+    }, { apiKey, ...meta, feature: 'classification' });
 
     const block = response.content.find(b => b.type === 'tool_use');
     if (!block) return applyFallback();
