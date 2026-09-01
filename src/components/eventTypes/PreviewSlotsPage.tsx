@@ -24,7 +24,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   const [availability, setAvailability] = useState<Availability | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [daysPerPage, setDaysPerPage] = useState(3);
+  const [daysPerPage, setDaysPerPage] = useState(2);
   const [pageOffset, setPageOffset] = useState(0);
 
   const load = useCallback(async (durationMinutes?: number) => {
@@ -162,56 +162,19 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         </div>
       )}
 
-      {/* One toolbar drives both calendars, so the two sides stay aligned. */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
+      {/*
+        One grid, one time axis: each day appears twice — the schedule as it
+        stands, then the slots that remain bookable — so the two sit right next
+        to each other and a single scrollbar moves everything.
+      */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
         <AvailabilityCalendar
           {...shared}
           events={availability.events}
           days={availability.days}
           commitmentTypes={availability.commitmentTypes}
-          controlsOnly
+          paired
         />
-      </div>
-
-      {/*
-        Both halves get the same events and the same window, so their time axes
-        are identical — the right one just doesn't paint the meetings. One
-        scroll container wraps the pair, so a single scrollbar moves both.
-      */}
-      <div className="bg-white rounded-xl border border-gray-200">
-        <div className="grid grid-cols-2 gap-4 px-4 pt-4">
-          <h2 className="text-sm font-medium text-gray-900">
-            Your calendar
-            <span className="font-normal text-gray-500"> — what is already booked</span>
-          </h2>
-          <h2 className="text-sm font-medium text-gray-900">
-            Open slots
-            <span className="font-normal text-gray-500"> — what visitors can book</span>
-          </h2>
-        </div>
-
-        <div className="overflow-auto max-h-[70vh] p-4">
-          <div className="grid grid-cols-2 gap-4 min-w-max">
-            <AvailabilityCalendar
-              {...shared}
-              events={availability.events}
-              commitmentTypes={availability.commitmentTypes}
-              showControls={false}
-              showLegend={false}
-              scrollable={false}
-            />
-            <AvailabilityCalendar
-              {...shared}
-              events={availability.events}
-              days={availability.days}
-              commitmentTypes={availability.commitmentTypes}
-              hideEvents
-              showControls={false}
-              showLegend={false}
-              scrollable={false}
-            />
-          </div>
-        </div>
       </div>
     </div>
   );

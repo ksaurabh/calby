@@ -116,9 +116,11 @@ English, and share a booking link that writes real invites to your calendar.
   and the whole organization's.
 - **Calendar views.** Every calendar can show 1, 2, 3, 4 days or a full week.
   "Preview slots" opens a page of its own — *Previewing open slots* — that takes
-  over everything but the header, with your existing meetings on the left and the
-  slots visitors can book on the right, sharing one set of controls so both sides
-  always show the same days.
+  over everything but the header. Each day appears twice, side by side: the
+  schedule as it stands, then the slots that remain bookable — Monday
+  (schedule), Monday (open slots), Tuesday (schedule), Tuesday (open slots). One
+  grid means one time axis and one scrollbar, so the two views of a day can
+  never drift out of line.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.

@@ -51,6 +51,12 @@ interface AvailabilityCalendarProps {
   scrollable?: boolean;
   /** Hide the legend when a parent renders a shared one. */
   showLegend?: boolean;
+  /**
+   * Show each day twice — the existing schedule, then the open slots — so the
+   * two sit next to each other on one time axis: Mon booked, Mon open, Tue
+   * booked, Tue open.
+   */
+  paired?: boolean;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -99,6 +105,7 @@ export function AvailabilityCalendar({
   hideEvents = false,
   scrollable = true,
   showLegend = true,
+  paired = false,
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
   const [ownOffset, setOwnOffset] = useState(0);
@@ -181,6 +188,14 @@ export function AvailabilityCalendar({
 
   const hourMarks: number[] = [];
   for (let m = fromMinute; m <= toMinute; m += 60) hourMarks.push(m);
+
+  // What each rendered column is: a day, and which layer it shows.
+  const columns: { key: string; kind: 'both' | 'events' | 'slots'; first: boolean }[] = paired
+    ? dateKeys.flatMap(key => [
+        { key, kind: 'events' as const, first: true },
+        { key, kind: 'slots' as const, first: false },
+      ])
+    : dateKeys.map(key => ({ key, kind: 'both' as const, first: true }));
 
   const blocksFor = (key: string) => {
     const meetings: Block[] = (timedByDate.get(key) || []).map(event => {
@@ -290,29 +305,56 @@ export function AvailabilityCalendar({
 
       {!controlsOnly && (
       <div className={`border border-gray-200 rounded-lg ${scrollable ? 'overflow-x-auto' : ''}`}>
-        <div style={{ minWidth: Math.max(280, 90 * daysPerPage + 56) }}>
+        <div style={{ minWidth: Math.max(280, 90 * columns.length + 56) }}>
           {/* Column headers */}
-          <div className="flex border-b border-gray-200 bg-gray-50 sticky top-0 z-10">
-            <div className="w-14 shrink-0" />
-            {dateKeys.map(key => {
-              const { weekday, day } = labelForDateKey(key);
-              const isToday = key === todayKey;
-              return (
-                <div key={key} className={`flex-1 px-2 py-2 text-center border-l border-gray-200 ${isToday ? 'bg-blue-50' : ''}`}>
-                  <div className={`text-xs font-medium ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>{weekday}</div>
-                  <div className="text-xs text-gray-500">{day}</div>
-                </div>
-              );
-            })}
+          <div className="sticky top-0 z-10 bg-gray-50 border-b border-gray-200">
+            <div className="flex">
+              <div className="w-14 shrink-0" />
+              {dateKeys.map(key => {
+                const { weekday, day } = labelForDateKey(key);
+                const isToday = key === todayKey;
+                return (
+                  <div
+                    key={key}
+                    className={`px-2 pt-2 ${paired ? 'pb-0' : 'pb-2'} text-center border-l-2 border-gray-200 ${isToday ? 'bg-blue-50' : ''}`}
+                    style={{ flex: paired ? 2 : 1 }}
+                  >
+                    <div className={`text-xs font-medium ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>{weekday}</div>
+                    <div className="text-xs text-gray-500">{day}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {paired && (
+              <div className="flex">
+                <div className="w-14 shrink-0" />
+                {columns.map((column, index) => (
+                  <div
+                    key={`${column.key}-${column.kind}-${index}`}
+                    className={`flex-1 px-1 pb-1.5 text-center text-[10px] ${
+                      column.first ? 'border-l-2' : 'border-l'
+                    } border-gray-200 ${column.key === todayKey ? 'bg-blue-50' : ''} ${
+                      column.kind === 'slots' ? 'text-emerald-700' : 'text-gray-500'
+                    }`}
+                  >
+                    {column.kind === 'slots' ? 'Open slots' : 'Schedule'}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* All-day row, only when something is there */}
           {dateKeys.some(key => allDayByDate.get(key)?.length) && (
             <div className="flex border-b border-gray-200 bg-white">
               <div className="w-14 shrink-0 px-1 py-1 text-[10px] text-gray-400 text-right">all-day</div>
-              {dateKeys.map(key => (
-                <div key={key} className="flex-1 border-l border-gray-200 p-1 space-y-1">
-                  {!hideEvents && (allDayByDate.get(key) || []).map(event => (
+              {columns.map((column, index) => (
+                <div
+                  key={`${column.key}-${column.kind}-${index}`}
+                  className={`flex-1 ${column.first ? 'border-l-2' : 'border-l'} border-gray-200 p-1 space-y-1`}
+                >
+                  {!hideEvents && column.kind !== 'slots' && (allDayByDate.get(column.key) || []).map(event => (
                     <div key={event.id} className="text-[10px] truncate rounded bg-gray-200 text-gray-700 px-1 py-0.5">
                       {event.summary}
                     </div>
@@ -336,10 +378,16 @@ export function AvailabilityCalendar({
               ))}
             </div>
 
-            {dateKeys.map(key => {
+            {columns.map((column, index) => {
+              const { key, kind } = column;
               const { meetings, open } = blocksFor(key);
+              const showMeetings = !hideEvents && kind !== 'slots';
+              const showOpen = kind !== 'events';
               return (
-                <div key={key} className="flex-1 relative border-l border-gray-200">
+                <div
+                  key={`${key}-${kind}-${index}`}
+                  className={`flex-1 relative ${column.first ? 'border-l-2' : 'border-l'} border-gray-200`}
+                >
                   {hourMarks.map(minute => (
                     <div
                       key={minute}
@@ -348,7 +396,7 @@ export function AvailabilityCalendar({
                     />
                   ))}
 
-                  {open.map(block => (
+                  {showOpen && open.map(block => (
                     <div
                       key={block.key}
                       className="absolute left-0.5 right-0.5 rounded border border-dashed border-emerald-300 bg-emerald-50/60 px-1 overflow-hidden"
@@ -361,7 +409,7 @@ export function AvailabilityCalendar({
                     </div>
                   ))}
 
-                  {!hideEvents && meetings.map(block => {
+                  {showMeetings && meetings.map(block => {
                     const clickable = !!onSelectEvent && !!block.event;
                     const Tag = clickable ? 'button' : 'div';
                     return (
