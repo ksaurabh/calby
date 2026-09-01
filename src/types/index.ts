@@ -102,6 +102,23 @@ export interface Booking {
   googleEventLink: string | null;
   status: string;
   createdAt: string;
+  /** Guest-facing links, also written into the calendar invite. */
+  cancelUrl: string | null;
+  rescheduleUrl: string | null;
+}
+
+/** What a cancel/reschedule page may see, addressed by the manage token. */
+export interface ManagedBooking {
+  eventTypeName: string;
+  ownerName: string;
+  name: string;
+  email: string;
+  notes: string;
+  start: string;
+  end: string;
+  timezone: string;
+  durationMinutes: number | null;
+  status: string;
 }
 
 export interface CalendarStatus {

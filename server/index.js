@@ -13,10 +13,12 @@ import {
   accessTokenFor,
   consentUrl,
   createEvent,
+  deleteEvent,
   exchangeCode,
   fetchBusy,
   forgetAccessToken,
   generateState,
+  updateEventTime,
 } from './calendar.js';
 import {
   generateSlots,
@@ -37,6 +39,9 @@ const USERS_FILE = join(__dirname, 'users.json');
 const ORGS_FILE = join(__dirname, 'orgs.json');
 const EVENT_TYPES_FILE = join(__dirname, 'event-types.json');
 const BOOKINGS_FILE = join(__dirname, 'bookings.json');
+
+// Public base URL for links in calendar invites (the frontend origin).
+const PUBLIC_URL = (process.env.CLIENT_URL || 'http://localhost:5178').replace(/\/+$/, '');
 
 // Domains that can always sign in (hardcoded)
 const ALWAYS_ALLOWED_DOMAINS = ['airmdr.com'];
@@ -301,6 +306,31 @@ function saveBookings(bookings) {
   writeFileSync(BOOKINGS_FILE, JSON.stringify({ bookings }, null, 2));
 }
 
+// Per-booking secret in the cancel/reschedule links. Longer than the page slug
+// because it authorizes changes to someone's meeting.
+function generateManageToken() {
+  return randomBytes(24).toString('base64url');
+}
+
+function cancelUrl(token) {
+  return `${PUBLIC_URL}/cancel/${token}`;
+}
+
+function rescheduleUrl(token) {
+  return `${PUBLIC_URL}/reschedule/${token}`;
+}
+
+// The invite body the guest and host both see in the calendar event.
+function eventDescription({ eventTypeName, name, email, notes, manageToken }) {
+  return [
+    `${eventTypeName} booked via Calby by ${name} <${email}>.`,
+    notes ? `\nNotes:\n${notes}` : '',
+    '\nNeed to change this meeting?',
+    `Reschedule: ${rescheduleUrl(manageToken)}`,
+    `Cancel: ${cancelUrl(manageToken)}`,
+  ].filter(Boolean).join('\n');
+}
+
 // The public part of a booking URL: 16 random characters, unguessable, and the
 // only thing standing between a stranger and the page — so it comes from a CSPRNG.
 function generatePublicSlug() {
@@ -338,7 +368,7 @@ function saveCalendarFor(email, calendar) {
 
 // Busy time + open slots for one event type. Shared by the owner's preview and
 // the public booking page.
-async function availabilityFor(eventType) {
+async function availabilityFor(eventType, { ignoreBookingId = null } = {}) {
   const calendar = calendarFor(eventType.ownerEmail);
   if (!calendar?.refreshToken) {
     const err = new Error('The owner has not connected a calendar yet.');
@@ -354,7 +384,7 @@ async function availabilityFor(eventType) {
   // Bookings we made are already on the calendar, but freeBusy can lag a moment;
   // excluding them explicitly avoids handing out the same slot twice.
   const takenStarts = getBookings()
-    .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled')
+    .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
   return { days: generateSlots({ rules: eventType.rules, busy, now, takenStarts }), token };
@@ -883,7 +913,12 @@ app.get('/api/bookings', requireAuth, (req, res) => {
   );
   const bookings = getBookings()
     .filter(b => mine.has(b.eventTypeId))
-    .sort((a, b) => b.start.localeCompare(a.start));
+    .sort((a, b) => b.start.localeCompare(a.start))
+    .map(b => ({
+      ...b,
+      cancelUrl: b.manageToken ? cancelUrl(b.manageToken) : null,
+      rescheduleUrl: b.manageToken ? rescheduleUrl(b.manageToken) : null,
+    }));
   res.json({ bookings });
 });
 
@@ -932,12 +967,16 @@ app.post('/api/book/:slug', async (req, res) => {
     const endDate = new Date(startDate.getTime() + eventType.rules.durationMinutes * 60_000);
     const owner = findUser(eventType.ownerEmail);
 
+    const manageToken = generateManageToken();
     const event = await createEvent(token, {
       summary: `${eventType.name} — ${name}`,
-      description: [
-        `Booked via Calby by ${name} <${email}>.`,
-        notes && `\nNotes:\n${notes}`,
-      ].filter(Boolean).join('\n'),
+      description: eventDescription({
+        eventTypeName: eventType.name,
+        name,
+        email,
+        notes,
+        manageToken,
+      }),
       start: startDate,
       end: endDate,
       timeZone: eventType.rules.timezone,
@@ -946,6 +985,7 @@ app.post('/api/book/:slug', async (req, res) => {
 
     const booking = {
       id: generateId('booking'),
+      manageToken,
       eventTypeId: eventType.id,
       eventTypeName: eventType.name,
       ownerEmail: eventType.ownerEmail,
@@ -972,11 +1012,154 @@ app.post('/api/book/:slug', async (req, res) => {
         email: booking.email,
         eventTypeName: eventType.name,
         ownerName: owner?.name || 'the host',
+        cancelUrl: cancelUrl(manageToken),
+        rescheduleUrl: rescheduleUrl(manageToken),
       },
     });
   } catch (err) {
     console.error('[booking] failed:', err.message);
     res.status(err.status === 409 ? 409 : 502).json({ error: err.message });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Manage a booking from the links in the calendar invite. Authorized by the
+// per-booking token in the URL — the guest has no account to sign in to.
+// ---------------------------------------------------------------------------
+function bookingByToken(token) {
+  return getBookings().find(b => b.manageToken && b.manageToken === token);
+}
+
+function publicBooking(booking, eventType, ownerName) {
+  return {
+    eventTypeName: booking.eventTypeName,
+    ownerName,
+    name: booking.name,
+    email: booking.email,
+    notes: booking.notes,
+    start: booking.start,
+    end: booking.end,
+    timezone: booking.timezone,
+    durationMinutes: eventType?.rules.durationMinutes ?? null,
+    status: booking.status,
+  };
+}
+
+// Details for the cancel and reschedule pages. Reschedule also needs open slots.
+app.get('/api/booking/:token', async (req, res) => {
+  const booking = bookingByToken(req.params.token);
+  if (!booking) return res.status(404).json({ error: 'This link is not valid.' });
+
+  const eventType = getEventTypes().find(e => e.id === booking.eventTypeId);
+  const owner = findUser(booking.ownerEmail);
+  const payload = {
+    booking: publicBooking(booking, eventType, owner?.name || 'the host'),
+    days: [],
+  };
+
+  // Cancelled bookings are still viewable so the page can say so plainly.
+  if (booking.status === 'cancelled' || !eventType || !eventType.active) {
+    return res.json(payload);
+  }
+
+  try {
+    // Ignore this booking's own slot so the current time isn't double-counted.
+    const { days } = await availabilityFor(eventType, { ignoreBookingId: booking.id });
+    payload.days = days;
+  } catch {
+    // Availability is only needed for rescheduling; cancelling still works.
+  }
+  res.json(payload);
+});
+
+app.post('/api/booking/:token/cancel', async (req, res) => {
+  const bookings = getBookings();
+  const index = bookings.findIndex(b => b.manageToken === req.params.token);
+  if (index < 0) return res.status(404).json({ error: 'This link is not valid.' });
+
+  const booking = bookings[index];
+  if (booking.status === 'cancelled') {
+    return res.json({ ok: true, alreadyCancelled: true });
+  }
+
+  try {
+    const calendar = calendarFor(booking.ownerEmail);
+    if (calendar?.refreshToken && booking.googleEventId) {
+      const token = await accessTokenFor(booking.ownerEmail, calendar.refreshToken);
+      await deleteEvent(token, booking.googleEventId);
+    }
+  } catch (err) {
+    // A 404/410 means it is already gone from the calendar — still cancel ours.
+    if (err.status !== 404 && err.status !== 410) {
+      console.error('[booking] cancel failed:', err.message);
+      return res.status(502).json({ error: err.message });
+    }
+  }
+
+  bookings[index] = {
+    ...booking,
+    status: 'cancelled',
+    cancelledAt: new Date().toISOString(),
+    cancelledBy: 'guest',
+    cancelReason: req.body?.reason?.trim() || '',
+  };
+  saveBookings(bookings);
+  res.json({ ok: true });
+});
+
+app.post('/api/booking/:token/reschedule', async (req, res) => {
+  const bookings = getBookings();
+  const index = bookings.findIndex(b => b.manageToken === req.params.token);
+  if (index < 0) return res.status(404).json({ error: 'This link is not valid.' });
+
+  const booking = bookings[index];
+  if (booking.status === 'cancelled') {
+    return res.status(400).json({ error: 'This meeting was cancelled. Please book a new time.' });
+  }
+
+  const start = req.body.start;
+  if (!start || Number.isNaN(Date.parse(start))) {
+    return res.status(400).json({ error: 'Pick a new time slot' });
+  }
+
+  const eventType = getEventTypes().find(e => e.id === booking.eventTypeId);
+  if (!eventType || !eventType.active) {
+    return res.status(409).json({ error: 'This event type is no longer taking bookings.' });
+  }
+
+  try {
+    const { days, token } = await availabilityFor(eventType, { ignoreBookingId: booking.id });
+    const startIso = new Date(start).toISOString();
+    if (!slotIsAvailable(startIso, days)) {
+      return res.status(409).json({ error: 'That time is no longer open. Please pick another slot.' });
+    }
+
+    const startDate = new Date(startIso);
+    const endDate = new Date(startDate.getTime() + eventType.rules.durationMinutes * 60_000);
+
+    if (booking.googleEventId) {
+      await updateEventTime(token, booking.googleEventId, {
+        start: startDate,
+        end: endDate,
+        timeZone: eventType.rules.timezone,
+      });
+    }
+
+    bookings[index] = {
+      ...booking,
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
+      rescheduledAt: new Date().toISOString(),
+      previousStart: booking.start,
+    };
+    saveBookings(bookings);
+
+    const owner = findUser(booking.ownerEmail);
+    res.json({ ok: true, booking: publicBooking(bookings[index], eventType, owner?.name || 'the host') });
+  } catch (err) {
+    console.error('[booking] reschedule failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
   }
 });
 

@@ -3,6 +3,7 @@ import type {
   CalendarStatus,
   EventType,
   EventTypeInput,
+  ManagedBooking,
   Org,
   OrgInput,
   PublicEventType,
@@ -67,10 +68,29 @@ export const api = {
     request<{ eventType: PublicEventType; days: SlotDay[] }>(`/api/book/${slug}`),
 
   book: (slug: string, data: { start: string; name: string; email: string; notes: string }) =>
-    request<{ ok: boolean; booking: { start: string; end: string; timezone: string; name: string; email: string; eventTypeName: string; ownerName: string } }>(
-      `/api/book/${slug}`,
-      { method: 'POST', body: JSON.stringify(data) }
-    ),
+    request<{
+      ok: boolean;
+      booking: {
+        start: string; end: string; timezone: string; name: string; email: string;
+        eventTypeName: string; ownerName: string; cancelUrl: string; rescheduleUrl: string;
+      };
+    }>(`/api/book/${slug}`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // Manage an existing booking from the links in the calendar invite
+  managedBooking: (token: string) =>
+    request<{ booking: ManagedBooking; days: SlotDay[] }>(`/api/booking/${token}`),
+
+  cancelBooking: (token: string, reason: string) =>
+    request<{ ok: boolean; alreadyCancelled?: boolean }>(`/api/booking/${token}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  rescheduleBooking: (token: string, start: string) =>
+    request<{ ok: boolean; booking: ManagedBooking }>(`/api/booking/${token}/reschedule`, {
+      method: 'POST',
+      body: JSON.stringify({ start }),
+    }),
 
   // Orgs
   listOrgs: () => request<{ orgs: Org[] }>('/api/orgs'),

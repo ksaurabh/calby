@@ -42,6 +42,11 @@ English, and share a booking link that writes real invites to your calendar.
   agent re-checks the calendar (the slot may have gone in the meantime), creates
   the event on the owner's primary calendar with the visitor as a guest, and
   Google emails the invitation to both.
+- **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
+  and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
+  can change the meeting without an account. Rescheduling patches the existing
+  calendar event (Google re-notifies both sides); cancelling deletes it and frees
+  the slot. Both pages are also linked from the booking confirmation.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -112,6 +117,9 @@ All routes require an authenticated session on an allowed domain.
 | GET | `/api/bookings` | user | Bookings taken on your event types |
 | GET | `/api/book/:slug` | **public** | Booking page data + open slots |
 | POST | `/api/book/:slug` | **public** | Book a slot; creates the calendar event |
+| GET | `/api/booking/:token` | **public** | Booking details + alternative slots |
+| POST | `/api/booking/:token/cancel` | **public** | Cancel; deletes the calendar event |
+| POST | `/api/booking/:token/reschedule` | **public** | Move to a new slot |
 | GET | `/api/orgs` | user | List organizations |
 | POST | `/api/orgs` | user | Create an organization |
 | PUT | `/api/orgs/:id` | org admin/creator/admin | Rename an organization |

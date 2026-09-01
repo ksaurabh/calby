@@ -5,7 +5,7 @@ import { ALL_VIEWS } from './types/view';
 import { Layout } from './components/layout';
 import { OrgsPage } from './components/orgs';
 import { EventTypesPage } from './components/eventTypes';
-import { BookingPage } from './components/booking';
+import { BookingPage, ManageBookingPage } from './components/booking';
 import { AdminPage } from './components/admin';
 import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './components/auth';
 
@@ -18,6 +18,12 @@ function viewFromPath(pathname: string): View {
 function bookingSlug(pathname: string): string | null {
   const match = pathname.match(/^\/book\/([A-Za-z0-9]{16})\/?$/);
   return match ? match[1] : null;
+}
+
+/** /cancel/<token> and /reschedule/<token> come from the calendar invite. */
+function manageBooking(pathname: string): { token: string; mode: 'cancel' | 'reschedule' } | null {
+  const match = pathname.match(/^\/(cancel|reschedule)\/([A-Za-z0-9_-]{16,})\/?$/);
+  return match ? { mode: match[1] as 'cancel' | 'reschedule', token: match[2] } : null;
 }
 
 function pathFromView(view: View): string {
@@ -46,6 +52,8 @@ function AppContent() {
   // Public routes (no auth required)
   const slug = bookingSlug(window.location.pathname);
   if (slug) return <BookingPage slug={slug} />;
+  const manage = manageBooking(window.location.pathname);
+  if (manage) return <ManageBookingPage token={manage.token} mode={manage.mode} />;
   if (window.location.pathname === '/auth/callback') return <AuthCallback />;
 
   if (isLoading) {

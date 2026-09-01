@@ -131,6 +131,24 @@ export async function fetchBusy(token, timeMin, timeMax) {
   return busy.map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
 }
 
+// Move an existing meeting. sendUpdates=all re-notifies both parties.
+export async function updateEventTime(token, eventId, { start, end, timeZone }) {
+  return calendarFetch(token, `/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      start: { dateTime: start.toISOString(), timeZone },
+      end: { dateTime: end.toISOString(), timeZone },
+    }),
+  });
+}
+
+// Remove the meeting and tell the guest it's off.
+export async function deleteEvent(token, eventId) {
+  return calendarFetch(token, `/calendars/primary/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    method: 'DELETE',
+  });
+}
+
 // Create the meeting and invite the person who booked. sendUpdates=all makes
 // Google email both parties.
 export async function createEvent(token, { summary, description, start, end, timeZone, attendee }) {

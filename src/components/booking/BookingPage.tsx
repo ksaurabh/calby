@@ -12,6 +12,8 @@ interface Confirmation {
   email: string;
   eventTypeName: string;
   ownerName: string;
+  cancelUrl: string;
+  rescheduleUrl: string;
 }
 
 const inputClass =
@@ -111,6 +113,14 @@ export function BookingPage({ slug }: { slug: string }) {
         <p className="mt-1 text-sm text-gray-500">{viewerTz}</p>
         <p className="mt-4 text-sm text-gray-600">
           A calendar invitation is on its way to {confirmation.email}.
+        </p>
+        <p className="mt-4 text-sm text-gray-500">
+          Need to change it?{' '}
+          <a href={confirmation.rescheduleUrl} className="text-blue-600 hover:text-blue-800">Reschedule</a>
+          {' · '}
+          <a href={confirmation.cancelUrl} className="text-blue-600 hover:text-blue-800">Cancel</a>
+          <br />
+          <span className="text-xs">These links are in your calendar invitation too.</span>
         </p>
       </div>
     );
