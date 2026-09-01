@@ -73,6 +73,27 @@ pm2 startup   # run the command it prints, to start PM2 on boot
 
 ## 4. nginx config
 
+The quickest path is the script in the repo, which generates the whole site
+config with the correct proxy headers, backs up any existing copy, applies the
+SELinux settings from step 5, and reloads (restoring the backup if the config
+fails to validate):
+
+```bash
+sudo ./scripts/setup-nginx.sh cal.airmdr.net 3002
+```
+
+It emits an HTTPS block automatically if a Let's Encrypt certificate for the
+domain already exists, and an HTTP-only block otherwise — so run it before
+certbot on a fresh instance, and again after, if you like.
+
+To verify a deployment at any time:
+
+```bash
+./scripts/check-deploy.sh cal.airmdr.net 3002
+```
+
+The rest of this section describes the same config by hand.
+
 Disable the default server block if present (in `/etc/nginx/nginx.conf`, comment out the
 `server { ... }` block around lines 37–51 that listens on port 80).
 
@@ -95,12 +116,18 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Backend-handled auth routes
-    location = /auth/google          { proxy_pass http://127.0.0.1:3002; }
-    location = /auth/google/callback { proxy_pass http://127.0.0.1:3002; }
-    location = /auth/logout          { proxy_pass http://127.0.0.1:3002; }
-    location = /auth/user            { proxy_pass http://127.0.0.1:3002; }
-    location = /auth/failure         { proxy_pass http://127.0.0.1:3002; }
+    # Backend-handled auth routes. These need the same proxy_set_header lines as
+    # /api/ — X-Forwarded-Proto especially. Without it Express sees the proxied
+    # request as plain HTTP and refuses to set the `secure` session cookie, so
+    # sign-in appears to work and then dumps you back on the login page.
+    # The regex excludes /auth/callback, which is a frontend route.
+    location ~ ^/auth/(google|google/callback|logout|user|failure)$ {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # Everything else (incl. /auth/callback, which is a frontend route) → SPA
     location / {
@@ -108,10 +135,6 @@ server {
     }
 }
 ```
-
-> The proxied `/auth/*` routes inherit nginx's default headers here. If sign-in misbehaves
-> behind the proxy, copy the four `proxy_set_header` lines from the `/api/` block into each
-> `/auth/*` block.
 
 Reload nginx:
 

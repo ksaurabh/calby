@@ -31,3 +31,6 @@ server/*.json
 *.njsproj
 *.sln
 *.sw?
+
+# Google OAuth client secret downloads
+client_secret*.json
