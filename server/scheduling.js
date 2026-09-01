@@ -255,6 +255,67 @@ export function zonedParts(date, timeZone) {
 
 const overlaps = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
 
+/** Merge overlapping/adjacent intervals into a tidy, sorted list. */
+function mergeIntervals(intervals) {
+  const sorted = [...intervals].sort((a, b) => a.start - b.start);
+  const merged = [];
+  for (const interval of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && interval.start <= last.end) {
+      if (interval.end > last.end) last.end = interval.end;
+    } else {
+      merged.push({ start: new Date(interval.start), end: new Date(interval.end) });
+    }
+  }
+  return merged;
+}
+
+/** `base` with every part of `cut` removed. */
+function subtractIntervals(base, cut) {
+  let pieces = base.map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
+  for (const hole of mergeIntervals(cut)) {
+    const next = [];
+    for (const piece of pieces) {
+      if (!overlaps(piece.start, piece.end, hole.start, hole.end)) {
+        next.push(piece);
+        continue;
+      }
+      if (piece.start < hole.start) next.push({ start: piece.start, end: new Date(hole.start) });
+      if (piece.end > hole.end) next.push({ start: new Date(hole.end), end: piece.end });
+    }
+    pieces = next;
+  }
+  return pieces;
+}
+
+/**
+ * Free up the time held by commitments the event type says it is fine to book
+ * over — but only where nothing else holds that time too. An event whose
+ * commitment type is unknown is always treated as blocking: guessing wrong here
+ * would double-book someone.
+ */
+export function applyBookOver({ busy, events, assignments, allowedTypeIds }) {
+  const allowed = new Set(allowedTypeIds || []);
+  if (!allowed.size || !events.length) return busy;
+
+  const overridable = [];
+  const blocking = [];
+  for (const event of events) {
+    if (event.allDay || !event.start || !event.end) continue;
+    const interval = { start: new Date(event.start), end: new Date(event.end) };
+    if (allowed.has(assignments.get(event.id))) overridable.push(interval);
+    else blocking.push(interval);
+  }
+  if (!overridable.length) return busy;
+
+  // Cut the overridable time out, then put back anything a blocking event also
+  // covers, so an overlapping real meeting still protects the slot.
+  return mergeIntervals([
+    ...subtractIntervals(busy, overridable),
+    ...blocking.filter(b => busy.some(x => overlaps(x.start, x.end, b.start, b.end))),
+  ]);
+}
+
 // Bookable slots grouped by local date.
 export function generateSlots({
   rules,

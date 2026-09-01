@@ -64,6 +64,8 @@ export interface EventType {
   guidance: string;
   /** The 16-character public part of the booking URL. */
   slug: string;
+  /** Commitment types whose entries may be booked over. */
+  bookOverCommitmentTypeIds: string[];
   rules: SchedulingRules;
   rulesSource: 'claude' | 'text';
   rulesUpdatedAt: string;
@@ -79,6 +81,7 @@ export interface EventTypeInput {
   guidance: string;
   active?: boolean;
   timezone?: string;
+  bookOverCommitmentTypeIds?: string[];
 }
 
 export interface Slot {

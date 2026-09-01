@@ -22,6 +22,7 @@ import {
   updateEventTime,
 } from './calendar.js';
 import {
+  applyBookOver,
   generateSlots,
   interpretGuidance,
   reviewSlots,
@@ -408,6 +409,13 @@ function generatePublicSlug() {
   return out;
 }
 
+// Keep only ids that are actually this owner's commitment types.
+function ownCommitmentTypeIds(email, ids) {
+  if (!Array.isArray(ids)) return [];
+  const mine = new Set(getCommitmentTypes(email).map(t => t.id));
+  return [...new Set(ids.filter(id => mine.has(id)))];
+}
+
 // Which meeting length to use: the requested one when it is on offer, the
 // event type's default otherwise. Returns null for an unsupported request.
 function resolveDuration(eventType, requested) {
@@ -470,7 +478,7 @@ async function availabilityFor(
   const now = new Date();
   const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
   const token = await accessTokenFor(eventType.ownerEmail, calendar.refreshToken);
-  const busy = await fetchBusy(token, now, horizonEnd);
+  let busy = await fetchBusy(token, now, horizonEnd);
 
   // Bookings we made are already on the calendar, but freeBusy can lag a moment;
   // excluding them explicitly avoids handing out the same slot twice.
@@ -478,23 +486,35 @@ async function availabilityFor(
     .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
-  const days = generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes });
   const apiKey = anthropicKeyFor(eventType.ownerEmail).key;
-  if (!apiKey || !days.length) return { days, token, reviewNote: null, drops: [] };
-
-  // What the surrounding commitments are, so the review can reason about them.
-  const events = await fetchEvents(token, now, horizonEnd);
+  const bookOver = eventType.bookOverCommitmentTypeIds || [];
   const commitmentTypes = getCommitmentTypes(eventType.ownerEmail);
-  const { assignments } =
-    review === 'compute'
-      ? await classifyEvents(events, commitmentTypes, { apiKey, email: eventType.ownerEmail })
-      : splitCached(events, commitmentTypes);
+
+  // Events are needed to know which commitments may be booked over, and to give
+  // the slot review something to reason about.
+  let events = [];
+  let assignments = new Map();
+  if (bookOver.length || apiKey) {
+    events = await fetchEvents(token, now, horizonEnd);
+    ({ assignments } =
+      review === 'compute'
+        ? await classifyEvents(events, commitmentTypes, { apiKey, email: eventType.ownerEmail })
+        : splitCached(events, commitmentTypes));
+  }
+
+  if (bookOver.length) {
+    busy = applyBookOver({ busy, events, assignments, allowedTypeIds: bookOver });
+  }
+
+  const days = generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes });
+  if (!apiKey || !days.length) return { days, token, reviewNote: null, drops: [] };
 
   // Same inputs, same answer — so the whole thing is cached under one key that
   // covers the guidance, the slots on offer, and the classified commitments.
   const cacheKey = fingerprintOf({
     guidance: eventType.guidance,
     rules: eventType.rules,
+    bookOver,
     duration: durationMinutes || eventType.rules.durationMinutes,
     slots: days.flatMap(d => d.slots.map(s => s.start)),
     events: events.map(e => `${e.id}:${e.start}:${e.end}:${e.summary}:${assignments.get(e.id) || ''}`),
@@ -1061,6 +1081,8 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
     ownerEmail: req.user.email.toLowerCase(),
     name,
     externalName: req.body.externalName?.trim() || name,
+    // Commitment types whose entries this event type may be booked over.
+    bookOverCommitmentTypeIds: ownCommitmentTypeIds(req.user.email, req.body.bookOverCommitmentTypeIds),
     description: req.body.description?.trim() || '',
     guidance,
     slug: generatePublicSlug(),
@@ -1106,6 +1128,9 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
     ...current,
     name: req.body.name?.trim() || current.name,
     externalName: req.body.externalName?.trim() || externalNameOf(current),
+    bookOverCommitmentTypeIds: req.body.bookOverCommitmentTypeIds
+      ? ownCommitmentTypeIds(req.user.email, req.body.bookOverCommitmentTypeIds)
+      : current.bookOverCommitmentTypeIds || [],
     description: req.body.description?.trim() ?? current.description,
     guidance,
     active: typeof req.body.active === 'boolean' ? req.body.active : current.active,

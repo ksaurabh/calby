@@ -1,15 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import type {
-  CalendarEvent,
-  CalendarStatus,
-  CommitmentType,
-  EventType,
-  SlotDay,
-} from '../../types';
+import type { CalendarStatus, CommitmentType, EventType } from '../../types';
 import { api } from '../../utils/api';
-import { formatDateTime } from '../../utils/format';
+import { navigate } from '../../utils/navigate';
 import { Button, Modal } from '../common';
-import { AvailabilityCalendar } from '../calendar';
 import { EventTypeForm } from './EventTypeForm';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
@@ -44,33 +37,24 @@ function rulesSummary(eventType: EventType) {
 export function EventTypesPage() {
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
+  const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<EventType | null>(null);
-  const [preview, setPreview] = useState<{
-    eventType: EventType;
-    days: SlotDay[];
-    events: CalendarEvent[];
-    commitmentTypes: CommitmentType[];
-    durationMinutes: number;
-    reviewNote: string | null;
-    drops: { start: string; reason: string }[];
-  } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
-  // Both preview calendars share these so the two sides always show the same days.
-  const [previewDays, setPreviewDays] = useState(3);
-  const [previewOffset, setPreviewOffset] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const [{ eventTypes }, status] = await Promise.all([
+      const [{ eventTypes }, status, commitments] = await Promise.all([
         api.listEventTypes(),
         api.calendarStatus(),
+        api.listCommitmentTypes(),
       ]);
       setEventTypes(eventTypes);
       setCalendar(status);
+      setCommitmentTypes(commitments.commitmentTypes);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -120,6 +104,7 @@ export function EventTypesPage() {
     description: string;
     guidance: string;
     timezone: string;
+    bookOverCommitmentTypeIds: string[];
   }) => {
     if (editing) {
       await api.updateEventType(editing.id, values);
@@ -139,17 +124,6 @@ export function EventTypesPage() {
     if (!window.confirm(`Delete "${eventType.name}"? Its booking link will stop working.`)) return;
     await api.deleteEventType(eventType.id);
     await load();
-  };
-
-  const showPreview = async (eventType: EventType, durationMinutes?: number) => {
-    setError(null);
-    try {
-      const { days, events, commitmentTypes, durationMinutes: used, reviewNote, drops } =
-        await api.eventTypeAvailability(eventType.id, durationMinutes);
-      setPreview({ eventType, days, events, commitmentTypes, durationMinutes: used, reviewNote, drops });
-    } catch (e) {
-      setError((e as Error).message);
-    }
   };
 
   const disconnect = async () => {
@@ -238,9 +212,29 @@ export function EventTypesPage() {
                   {eventType.rules.summary && (
                     <p className="text-xs text-gray-500 mt-1">{eventType.rules.summary}</p>
                   )}
+                  {eventType.bookOverCommitmentTypeIds?.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-gray-700">OK to book over:</span>
+                      {eventType.bookOverCommitmentTypeIds.map(id => {
+                        const type = commitmentTypes.find(t => t.id === id);
+                        if (!type) return null;
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border"
+                            style={{ backgroundColor: `${type.color}18`, borderColor: type.color }}
+                          >
+                            {type.name}
+                          </span>
+                        );
+                      })}
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-2 shrink-0">
-                  <Button variant="ghost" onClick={() => showPreview(eventType)}>Preview slots</Button>
+                  <Button variant="ghost" onClick={() => navigate(`/preview/${eventType.id}`)}>
+                    Preview slots
+                  </Button>
                   <Button variant="ghost" onClick={() => { setEditing(eventType); setShowForm(true); }}>Edit</Button>
                   <Button variant="ghost" onClick={() => toggleActive(eventType)}>
                     {eventType.active ? 'Pause' : 'Resume'}
@@ -277,120 +271,12 @@ export function EventTypesPage() {
       >
         <EventTypeForm
           eventType={editing || undefined}
+          commitmentTypes={commitmentTypes}
           onSubmit={handleSubmit}
           onCancel={closeForm}
         />
       </Modal>
 
-      <Modal
-        isOpen={!!preview}
-        onClose={() => setPreview(null)}
-        title={preview ? `Availability — ${preview.eventType.name}` : ''}
-        size="full"
-      >
-        {preview && (
-          <>
-            {preview.eventType.rules.durationOptions?.length > 1 && (
-              <div className="flex items-center gap-2 flex-wrap mb-4">
-                <span className="text-sm text-gray-600">Preview length</span>
-                {preview.eventType.rules.durationOptions.map(minutes => (
-                  <button
-                    key={minutes}
-                    onClick={() => showPreview(preview.eventType, minutes)}
-                    className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
-                      preview.durationMinutes === minutes
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-gray-300 text-gray-700 hover:border-blue-500 hover:bg-blue-50'
-                    }`}
-                  >
-                    {minutes} min
-                  </button>
-                ))}
-              </div>
-            )}
-            {preview.reviewNote && (
-              <div className="mb-4 rounded-lg bg-blue-50 text-blue-900 px-4 py-3 text-sm">
-                <span className="font-medium">Commitment-aware review:</span> {preview.reviewNote}
-                {preview.drops.length > 0 && (
-                  <ul className="mt-2 space-y-1 text-xs text-blue-800">
-                    {preview.drops.slice(0, 8).map(drop => (
-                      <li key={drop.start}>
-                        · {formatDateTime(drop.start, preview.eventType.rules.timezone)} — {drop.reason}
-                      </li>
-                    ))}
-                    {preview.drops.length > 8 && (
-                      <li>· and {preview.drops.length - 8} more</li>
-                    )}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            {preview.days.length === 0 && (
-              <p className="text-sm text-amber-700 bg-amber-50 rounded-lg px-3 py-2 mb-4">
-                No open slots in the next {preview.eventType.rules.horizonWeeks} week(s) — your
-                calendar is full, or the guidance is narrower than you intended.
-              </p>
-            )}
-            {(() => {
-              const window = {
-                timezone: preview.eventType.rules.timezone,
-                startMinute: preview.eventType.rules.startMinute,
-                endMinute: preview.eventType.rules.endMinute,
-                weeks: preview.eventType.rules.horizonWeeks,
-              };
-              const shared = {
-                window,
-                daysPerPage: previewDays,
-                onDaysPerPageChange: setPreviewDays,
-                pageOffset: previewOffset,
-                onPageOffsetChange: setPreviewOffset,
-              };
-              return (
-                <>
-                  {/* One toolbar drives both sides; the calendars themselves hide theirs. */}
-                  <div className="mb-3">
-                    <AvailabilityCalendar
-                      {...shared}
-                      events={[]}
-                      commitmentTypes={preview.commitmentTypes}
-                      controlsOnly
-                    />
-                  </div>
-
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    <div>
-                      <h3 className="text-sm font-medium text-gray-900 mb-2">
-                        Your calendar
-                        <span className="font-normal text-gray-500"> — what is already booked</span>
-                      </h3>
-                      <AvailabilityCalendar
-                        {...shared}
-                        events={preview.events}
-                        commitmentTypes={preview.commitmentTypes}
-                        onSelectEvent={undefined}
-                        showControls={false}
-                      />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-medium text-gray-900 mb-2">
-                        Open slots
-                        <span className="font-normal text-gray-500"> — what visitors can book</span>
-                      </h3>
-                      <AvailabilityCalendar
-                        {...shared}
-                        events={[]}
-                        days={preview.days}
-                        showControls={false}
-                      />
-                    </div>
-                  </div>
-                </>
-              );
-            })()}
-          </>
-        )}
-      </Modal>
     </div>
   );
 }

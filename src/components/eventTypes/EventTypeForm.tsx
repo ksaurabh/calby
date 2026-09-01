@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import type { EventType } from '../../types';
+import type { CommitmentType, EventType } from '../../types';
 import { browserTimezone } from '../../utils/format';
 import { Button } from '../common';
 
 interface EventTypeFormProps {
   eventType?: EventType;
+  commitmentTypes: CommitmentType[];
   onSubmit: (values: {
     name: string;
     externalName: string;
     description: string;
     guidance: string;
     timezone: string;
+    bookOverCommitmentTypeIds: string[];
   }) => Promise<void>;
   onCancel: () => void;
 }
@@ -24,11 +26,12 @@ const EXAMPLES = [
   'Half hour syncs, mornings, no Fridays, 15 minute gap between calls',
 ];
 
-export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormProps) {
+export function EventTypeForm({ eventType, commitmentTypes, onSubmit, onCancel }: EventTypeFormProps) {
   const [name, setName] = useState(eventType?.name || '');
   const [externalName, setExternalName] = useState(eventType?.externalName || '');
   const [description, setDescription] = useState(eventType?.description || '');
   const [guidance, setGuidance] = useState(eventType?.guidance || '');
+  const [bookOver, setBookOver] = useState<string[]>(eventType?.bookOverCommitmentTypeIds || []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -44,6 +47,7 @@ export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormPr
         description: description.trim(),
         guidance: guidance.trim(),
         timezone: eventType?.rules.timezone || browserTimezone(),
+        bookOverCommitmentTypeIds: bookOver,
       });
     } catch (err) {
       setError((err as Error).message);
@@ -123,6 +127,53 @@ export function EventTypeForm({ eventType, onSubmit, onCancel }: EventTypeFormPr
             </button>
           ))}
         </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          OK to book over <span className="text-gray-400 font-normal">(optional)</span>
+        </label>
+        {commitmentTypes.length === 0 ? (
+          <p className="text-xs text-gray-500">
+            No commitment types yet. Define some on the Commitment types page and you can
+            let this event type be booked over them.
+          </p>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              {commitmentTypes.map(type => {
+                const checked = bookOver.includes(type.id);
+                return (
+                  <label key={type.id} className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={checked}
+                      onChange={() =>
+                        setBookOver(current =>
+                          checked ? current.filter(id => id !== type.id) : [...current, type.id]
+                        )
+                      }
+                    />
+                    <span
+                      className="mt-1 w-3 h-3 rounded shrink-0 border"
+                      style={{ backgroundColor: `${type.color}33`, borderColor: type.color }}
+                    />
+                    <span className="min-w-0">
+                      <span className="text-sm text-gray-900">{type.name}</span>
+                      <span className="block text-xs text-gray-500">{type.condition}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Time held by these commitments is still offered to people booking. Anything
+              else on your calendar — including entries that haven't been classified —
+              keeps blocking.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="flex justify-end gap-2 pt-2">

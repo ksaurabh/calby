@@ -36,6 +36,12 @@ English, and share a booking link that writes real invites to your calendar.
   horizon, notice, buffer, per-day cap), which the UI shows back to you so you
   can check the reading. Slot generation itself is deterministic, so booking
   pages never wait on a model call.
+- **OK to book over.** An event type can name commitment types whose entries it
+  may be booked over — "this 15-minute intro can take my focus time, but never a
+  customer call". That time is offered to visitors even though the calendar shows
+  it as busy. Anything else keeps blocking, including entries that haven't been
+  classified yet, and an overlapping ordinary meeting still protects its part of
+  the slot.
 - **Commitment-aware slots.** Free/busy answers "when am I free"; it can't answer
   intent like *"never straight after a customer call"*. So after the deterministic
   candidates are generated, they are reviewed once with the surrounding calendar
@@ -108,10 +114,11 @@ English, and share a booking link that writes real invites to your calendar.
   24 hours, the 90-day total, a daily bar chart, and a breakdown by feature, with
   a table view of the same data. Org admins can switch between their own spend
   and the whole organization's.
-- **Calendar views.** Every calendar can show 1, 2, 3, 4 days or a full week. In
-  the availability preview two calendars sit side by side — your existing
-  meetings on the left, the slots visitors can book on the right — sharing one
-  set of controls so both sides always show the same days.
+- **Calendar views.** Every calendar can show 1, 2, 3, 4 days or a full week.
+  "Preview slots" opens a page of its own — *Previewing open slots* — that takes
+  over everything but the header, with your existing meetings on the left and the
+  slots visitors can book on the right, sharing one set of controls so both sides
+  always show the same days.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
