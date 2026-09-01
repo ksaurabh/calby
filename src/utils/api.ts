@@ -60,6 +60,7 @@ export const api = {
       timezone: string;
       from: string;
       to: string;
+      classification: { cached: number; fresh: number };
     }>('/api/calendar/events'),
 
   askCalendar: (question: string, history: ChatMessage[]) =>
@@ -69,7 +70,7 @@ export const api = {
     }),
 
   explainEvent: (eventId: string) =>
-    request<EventExplanation>('/api/calendar/explain', {
+    request<EventExplanation & { cached: boolean }>('/api/calendar/explain', {
       method: 'POST',
       body: JSON.stringify({ eventId }),
     }),

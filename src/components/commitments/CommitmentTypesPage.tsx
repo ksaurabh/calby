@@ -35,6 +35,7 @@ export function CommitmentTypesPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [timezone, setTimezone] = useState('UTC');
   const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [classification, setClassification] = useState<{ cached: number; fresh: number } | null>(null);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [explaining, setExplaining] = useState<CalendarEvent | null>(null);
   const [explanation, setExplanation] = useState<EventExplanation | null>(null);
@@ -46,6 +47,7 @@ export function CommitmentTypesPage() {
       const data = await api.calendarEvents();
       setEvents(data.events);
       setTimezone(data.timezone);
+      setClassification(data.classification);
       setCalendarError(null);
     } catch (e) {
       setCalendarError((e as Error).message);
@@ -202,6 +204,13 @@ export function CommitmentTypesPage() {
                 Coloured by commitment type. Click an entry for a report on how it scores
                 against every type.
               </p>
+              {classification && (
+                <p className="text-xs text-gray-400 mt-1">
+                  {classification.fresh === 0
+                    ? `${classification.cached} entries coloured from cache — no model calls.`
+                    : `${classification.fresh} newly judged, ${classification.cached} from cache.`}
+                </p>
+              )}
             </div>
             <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
           </div>

@@ -26,7 +26,7 @@ import {
   interpretGuidance,
   slotIsAvailable,
 } from './scheduling.js';
-import { classifyEvents, clearClassificationCache } from './classify.js';
+import { cacheReport, cachedReport, classifyEvents } from './classify.js';
 import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 
@@ -1078,7 +1078,7 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
-    const assignments = await classifyEvents(events, commitmentTypes, {
+    const { assignments } = await classifyEvents(events, commitmentTypes, {
       apiKey: anthropicKeyFor(req.user.email).key,
     });
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
@@ -1412,22 +1412,24 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   const token = await accessTokenFor(req.user.email, calendar.refreshToken);
   const events = await fetchEvents(token, from, to, { maxResults });
   const commitmentTypes = getCommitmentTypes(req.user.email);
-  const assignments = await classifyEvents(events, commitmentTypes, {
+  const { assignments, stats } = await classifyEvents(events, commitmentTypes, {
     apiKey: anthropicKeyFor(req.user.email).key,
   });
-  return { events, commitmentTypes, assignments };
+  return { events, commitmentTypes, assignments, stats };
 }
 
 app.get('/api/calendar/events', requireAuth, async (req, res) => {
   const { from, to } = calendarWindow(req.query);
   try {
-    const { events, commitmentTypes, assignments } = await ownerEvents(req, { from, to });
+    const { events, commitmentTypes, assignments, stats } = await ownerEvents(req, { from, to });
     res.json({
       events: events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
       commitmentTypes,
       timezone: ownerTimezone(req.user.email),
       from: from.toISOString(),
       to: to.toISOString(),
+      // How many colours came from cache vs a fresh model call.
+      classification: stats,
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
@@ -1472,13 +1474,19 @@ app.post('/api/calendar/explain', requireAuth, async (req, res) => {
     const event = events.find(e => e.id === eventId);
     if (!event) return res.status(404).json({ error: 'That event is not in the current window.' });
 
+    // The report for an unchanged event against unchanged conditions never
+    // changes, so it is cached alongside the colours.
+    const cached = cachedReport(event, commitmentTypes);
+    if (cached) return res.json({ event, ...cached, cached: true });
+
     const report = await explainEventMatch({
       event,
       commitmentTypes,
       timezone: ownerTimezone(req.user.email),
       apiKey: anthropicKeyFor(req.user.email).key,
     });
-    res.json({ event, ...report });
+    cacheReport(event, commitmentTypes, report);
+    res.json({ event, ...report, cached: false });
   } catch (err) {
     console.error('[assistant] explain failed:', err.message);
     res.status(err.status || 502).json({ error: err.message });
@@ -1521,8 +1529,8 @@ app.post('/api/commitment-types', requireAuth, (req, res) => {
     updatedAt: now,
   };
   saveCommitmentTypes([...all, commitmentType]);
-  // Conditions changed, so cached classifications no longer apply.
-  clearClassificationCache();
+  // No cache wipe needed: cached verdicts are keyed by the set of conditions,
+  // so changing them simply misses and re-asks.
   res.json(commitmentType);
 });
 
@@ -1541,7 +1549,6 @@ app.put('/api/commitment-types/:id', requireAuth, (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   saveCommitmentTypes(all);
-  clearClassificationCache();
   res.json(all[index]);
 });
 
@@ -1552,7 +1559,6 @@ app.delete('/api/commitment-types/:id', requireAuth, (req, res) => {
   );
   if (!exists) return res.status(404).json({ error: 'Commitment type not found' });
   saveCommitmentTypes(all.filter(t => t.id !== req.params.id));
-  clearClassificationCache();
   res.json({ success: true });
 });
 

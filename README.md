@@ -67,9 +67,15 @@ English, and share a booking link that writes real invites to your calendar.
   kind of calendar entry ("any meeting with a customer") plus a colour from a
   fixed palette. In the availability preview, Claude labels each existing entry
   with whichever condition it satisfies and the calendar colour-codes
-  accordingly, with a legend; unmatched entries stay grey. Results are cached by
-  title so repeat previews don't re-ask the model, and without an API key the
+  accordingly, with a legend; unmatched entries stay grey. Without an API key the
   labelling falls back to keyword overlap.
+- **Cached verdicts.** Every colour and every per-event report is cached on disk
+  under a fingerprint of the event (title, time, organizer, guests, location,
+  recurrence) *and* the set of commitment conditions. An unchanged calendar
+  re-colours for free — no model call at all. Editing one event re-asks about
+  that event alone; editing a condition re-asks about everything, since the
+  answers could all change. Pending writes are flushed on shutdown, so a restart
+  doesn't throw away verdicts already paid for.
 - **Calendar view and assistant.** The commitment types page shows your calendar
   for the last week and the next four, coloured by commitment type. Clicking any
   entry produces a report judging it against *every* commitment type — match or
@@ -187,5 +193,6 @@ Created under `server/` at first run and excluded from git:
 - `event-types.json` — event types, their guidance and derived rules
 - `bookings.json` — bookings taken through booking pages
 - `commitment-types.json` — commitment conditions and their colours
+- `classification-cache.json` — cached commitment verdicts and reports
 - `allowed-domains.json` — extra domains permitted to sign in
 - `super-admins.json` — super admin emails (see `super-admins.example.json`)
