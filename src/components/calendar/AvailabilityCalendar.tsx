@@ -196,7 +196,7 @@ export function AvailabilityCalendar({
       <div className="flex items-center gap-4 gap-y-2 mb-3 text-xs text-gray-600 flex-wrap">
         {days.length > 0 && (
           <span className="flex items-center gap-1.5">
-            <span className="inline-block w-3 h-3 rounded bg-emerald-100 border border-emerald-400" />
+            <span className="inline-block w-3 h-3 rounded border border-dashed border-emerald-300 bg-emerald-50" />
             Bookable
           </span>
         )}
@@ -277,6 +277,19 @@ export function AvailabilityCalendar({
                     />
                   ))}
 
+                  {open.map(block => (
+                    <div
+                      key={block.key}
+                      className="absolute left-0.5 right-0.5 rounded border border-dashed border-emerald-300 bg-emerald-50/60 px-1 overflow-hidden"
+                      style={{ top: block.top, height: block.height }}
+                      title={`Bookable · ${block.label}`}
+                    >
+                      {block.height > 22 && (
+                        <div className="text-[10px] text-emerald-700/70 truncate">{block.label}</div>
+                      )}
+                    </div>
+                  ))}
+
                   {meetings.map(block => {
                     const clickable = !!onSelectEvent && !!block.event;
                     const Tag = clickable ? 'button' : 'div';
@@ -305,16 +318,6 @@ export function AvailabilityCalendar({
                     );
                   })}
 
-                  {open.map(block => (
-                    <div
-                      key={block.key}
-                      className="absolute left-0.5 right-0.5 rounded bg-emerald-100 border border-emerald-400 px-1 overflow-hidden"
-                      style={{ top: block.top, height: block.height }}
-                      title={`Bookable · ${block.label}`}
-                    >
-                      <div className="text-[10px] font-medium text-emerald-800 truncate">{block.label}</div>
-                    </div>
-                  ))}
                 </div>
               );
             })}
