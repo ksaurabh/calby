@@ -45,38 +45,76 @@ check('weekday of 2026-07-15 is Wed', zonedParts(new Date('2026-07-15T12:00:00Z'
 const rules = normalizeRules({ durationMinutes: 30, horizonWeeks: 1, timezone: 'America/New_York',
   weekdays: [1,2,3,4,5], startMinute: 540, endMinute: 660, slotIntervalMinutes: 30, bufferMinutes: 0, minNoticeHours: 0, maxPerDay: 0 });
 const now = new Date('2026-01-12T05:00:00Z'); // Monday 00:00 ET
-let days = generateSlots({ rules, busy: [], now });
+let { days } = generateSlots({ rules, busy: [], now });
 check('weekdays only (5 days in a week horizon)', days.length === 5, days.length);
 check('4 slots/day for 9-11 at 30 min', days[0].slots.length === 4, days[0].slots.length);
 check('first slot is 14:00Z (9am EST)', days[0].slots[0].start === '2026-01-12T14:00:00.000Z', days[0].slots[0].start);
 
 // busy blocks one slot
-days = generateSlots({ rules, busy: [{ start: new Date('2026-01-12T14:00:00Z'), end: new Date('2026-01-12T14:30:00Z') }], now });
+({ days } = generateSlots({ rules, busy: [{ start: new Date('2026-01-12T14:00:00Z'), end: new Date('2026-01-12T14:30:00Z') }], now }));
 check('busy removes exactly one slot', days[0].slots.length === 3, days[0].slots.length);
 check('9:30 survives', days[0].slots[0].start === '2026-01-12T14:30:00.000Z', days[0].slots[0].start);
 
 // buffer extends the block
 const buffered = { ...rules, bufferMinutes: 30 };
-days = generateSlots({ rules: buffered, busy: [{ start: new Date('2026-01-12T14:00:00Z'), end: new Date('2026-01-12T14:30:00Z') }], now });
+({ days } = generateSlots({ rules: buffered, busy: [{ start: new Date('2026-01-12T14:00:00Z'), end: new Date('2026-01-12T14:30:00Z') }], now }));
 check('30 min buffer removes two more', days[0].slots.length === 2, days[0].slots.length);
 
 // min notice
-days = generateSlots({ rules: { ...rules, minNoticeHours: 24 }, busy: [], now });
+({ days } = generateSlots({ rules: { ...rules, minNoticeHours: 24 }, busy: [], now }));
 check('24h notice drops the first day', days[0].date !== '2026-01-12', days[0].date);
 
 // already-booked slot
-days = generateSlots({ rules, busy: [], now, takenStarts: ['2026-01-12T14:00:00.000Z'] });
+({ days } = generateSlots({ rules, busy: [], now, takenStarts: ['2026-01-12T14:00:00.000Z'] }));
 check('taken slot excluded', days[0].slots[0].start === '2026-01-12T14:30:00.000Z', days[0].slots[0].start);
 
 // maxPerDay
-days = generateSlots({ rules: { ...rules, maxPerDay: 2 }, busy: [], now });
+({ days } = generateSlots({ rules: { ...rules, maxPerDay: 2 }, busy: [], now }));
 check('maxPerDay caps slots', days[0].slots.length === 2, days[0].slots.length);
 
 // DST spring-forward day: America/New_York, 2026-03-08
 const dstRules = normalizeRules({ ...rules, timezone: 'America/New_York', startMinute: 540, endMinute: 660, weekdays: [0,1,2,3,4,5,6] });
-days = generateSlots({ rules: dstRules, busy: [], now: new Date('2026-03-08T05:00:00Z') });
+({ days } = generateSlots({ rules: dstRules, busy: [], now: new Date('2026-03-08T05:00:00Z') }));
 const dstDay = days.find(d => d.date === '2026-03-08');
 check('DST day 9am ET = 13:00Z (EDT)', dstDay?.slots[0].start === '2026-03-08T13:00:00.000Z', dstDay?.slots[0].start);
+
+// --- the grid and the explanation must agree, always ---
+// Every candidate the generator considered carries a diagnosis; a slot is
+// offered exactly when that diagnosis has no reasons against it.
+const conflictRules = normalizeRules({
+  durationMinutes: 30, horizonWeeks: 1, timezone: 'America/New_York', weekdays: [1,2,3,4,5],
+  startMinute: 540, endMinute: 1020, slotIntervalMinutes: 30, bufferMinutes: 15,
+  minNoticeHours: 2, maxPerDay: 3,
+});
+const conflictEvent = {
+  id: 'ev', summary: 'Acme <> AirMDR',
+  start: '2026-01-12T15:00:00Z', end: '2026-01-12T16:00:00Z',
+};
+const result = generateSlots({
+  rules: conflictRules,
+  busy: [{ start: new Date(conflictEvent.start), end: new Date(conflictEvent.end) }],
+  now: new Date('2026-01-12T05:00:00Z'),
+  takenStarts: ['2026-01-12T14:00:00.000Z'],
+  events: [conflictEvent],
+  assignments: new Map([['ev', 'ct-1']]),
+  commitmentTypes: [{ id: 'ct-1', name: 'Customer calls' }],
+  drops: [{ start: '2026-01-13T14:00:00.000Z', reason: 'right after a customer call' }],
+});
+const offered = new Set(result.days.flatMap(d => d.slots.map(s => s.start)));
+let mismatches = 0;
+for (const [iso, diagnosis] of result.diagnoses) {
+  if (diagnosis.open !== offered.has(iso)) mismatches++;
+}
+check('every diagnosis agrees with the grid', mismatches === 0, `${mismatches} disagreements`);
+check('offered slots have no reasons',
+  [...offered].every(iso => result.diagnoses.get(iso).reasons.length === 0));
+check('a dropped slot is closed and says why',
+  result.diagnoses.get('2026-01-13T14:00:00.000Z')?.reasons.some(r => r.code === 'dropped-by-review'),
+  JSON.stringify(result.diagnoses.get('2026-01-13T14:00:00.000Z')?.reasons));
+check('a taken slot is closed and says why',
+  result.diagnoses.get('2026-01-12T14:00:00.000Z')?.reasons.some(r => r.code === 'already-booked'));
+check('the conflicting slot names the meeting',
+  result.diagnoses.get('2026-01-12T15:00:00.000Z')?.reasons.some(r => r.detail.includes('Acme')));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

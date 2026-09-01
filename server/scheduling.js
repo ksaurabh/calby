@@ -288,79 +288,68 @@ function subtractIntervals(base, cut) {
   return pieces;
 }
 
-/**
- * Free up the time held by commitments the event type says it is fine to book
- * over — but only where nothing else holds that time too. An event whose
- * commitment type is unknown is always treated as blocking: guessing wrong here
- * would double-book someone.
- */
-export function applyBookOver({ busy, events, assignments, allowedTypeIds }) {
-  const allowed = new Set(allowedTypeIds || []);
-  if (!allowed.size || !events.length) return busy;
 
-  const overridable = [];
-  const blocking = [];
-  for (const event of events) {
-    if (event.allDay || !event.start || !event.end) continue;
-    const interval = { start: new Date(event.start), end: new Date(event.end) };
-    if (allowed.has(assignments.get(event.id))) overridable.push(interval);
-    else blocking.push(interval);
-  }
-  if (!overridable.length) return busy;
-
-  // Cut the overridable time out, then put back anything a blocking event also
-  // covers, so an overlapping real meeting still protects the slot.
-  return mergeIntervals([
-    ...subtractIntervals(busy, overridable),
-    ...blocking.filter(b => busy.some(x => overlaps(x.start, x.end, b.start, b.end))),
-  ]);
-}
 
 // Bookable slots grouped by local date.
+//
+// Every candidate on the grid is put through diagnoseSlot, and a slot is offered
+// exactly when that returns no reasons. The diagnoses are returned alongside, so
+// "why isn't this open?" is answered by the very same computation that decided
+// it — the two can't drift apart.
 export function generateSlots({
   rules,
   busy = [],
   now = new Date(),
   takenStarts = [],
-  // Which of the offered lengths to lay out; defaults to the event type's own.
   durationMinutes: durationOverride,
+  events = [],
+  assignments = new Map(),
+  commitmentTypes = [],
+  bookOver = [],
+  drops = [],
 } = {}) {
-  const {
-    horizonWeeks, timezone, weekdays, startMinute, endMinute,
-    slotIntervalMinutes, bufferMinutes, minNoticeHours, maxPerDay,
-  } = rules;
+  const { horizonWeeks, timezone, startMinute, endMinute, slotIntervalMinutes } = rules;
   const durationMinutes = durationOverride || rules.durationMinutes;
 
-  const earliest = new Date(now.getTime() + minNoticeHours * 3600_000);
-  const horizonEnd = new Date(now.getTime() + horizonWeeks * 7 * 86400_000);
-  const taken = new Set(takenStarts.map(t => new Date(t).getTime()));
   const days = [];
+  const diagnoses = new Map();
 
-  // Walk local calendar days from today until the horizon.
   for (let offset = 0; offset <= horizonWeeks * 7; offset++) {
     const dayAnchor = new Date(now.getTime() + offset * 86400_000);
-    const { year, month, day, weekday, isoDate } = zonedParts(dayAnchor, timezone);
-    if (!weekdays.includes(weekday)) continue;
+    const { year, month, day, isoDate } = zonedParts(dayAnchor, timezone);
 
     const slots = [];
+    let offeredThatDay = 0;
     for (let minute = startMinute; minute + durationMinutes <= endMinute; minute += slotIntervalMinutes) {
       const start = zonedTimeToUtc(year, month, day, minute, timezone);
-      const end = new Date(start.getTime() + durationMinutes * 60_000);
-      if (start < earliest || end > horizonEnd) continue;
-      if (taken.has(start.getTime())) continue;
+      const startIso = start.toISOString();
 
-      const guardStart = new Date(start.getTime() - bufferMinutes * 60_000);
-      const guardEnd = new Date(end.getTime() + bufferMinutes * 60_000);
-      if (busy.some(b => overlaps(guardStart, guardEnd, b.start, b.end))) continue;
+      const diagnosis = diagnoseSlot({
+        rules,
+        start: startIso,
+        durationMinutes,
+        busy,
+        events,
+        assignments,
+        commitmentTypes,
+        bookOver,
+        takenStarts,
+        drops,
+        offeredThatDay,
+        now,
+      });
+      diagnoses.set(startIso, diagnosis);
 
-      slots.push({ start: start.toISOString(), end: end.toISOString() });
-      if (maxPerDay && slots.length >= maxPerDay) break;
+      if (diagnosis.open) {
+        slots.push({ start: startIso, end: new Date(start.getTime() + durationMinutes * 60_000).toISOString() });
+        offeredThatDay++;
+      }
     }
 
     if (slots.length) days.push({ date: isoDate, slots });
   }
 
-  return days;
+  return { days, diagnoses };
 }
 
 // Is this exact start still offered? Used to re-check at booking time.
@@ -384,7 +373,7 @@ export function diagnoseSlot({
   bookOver = [],
   takenStarts = [],
   drops = [],
-  bookingsThatDay = 0,
+  offeredThatDay = 0,
   now = new Date(),
 }) {
   const duration = durationMinutes || rules.durationMinutes;
@@ -437,7 +426,7 @@ export function diagnoseSlot({
   if (takenStarts.some(t => new Date(t).getTime() === startDate.getTime())) {
     reasons.push({ code: 'already-booked', detail: 'Someone has already booked this exact slot.' });
   }
-  if (rules.maxPerDay && bookingsThatDay >= rules.maxPerDay) {
+  if (rules.maxPerDay && offeredThatDay >= rules.maxPerDay) {
     reasons.push({
       code: 'max-per-day',
       detail: `This event type offers at most ${rules.maxPerDay} slots a day and that day is full.`,
@@ -465,8 +454,19 @@ export function diagnoseSlot({
     });
   }
 
-  // Busy time with no matching event — another calendar, or an entry we can't see.
-  if (!conflicts.length && busy.some(b => overlaps(guardStart, guardEnd, b.start, b.end))) {
+  // Busy time that no overridable commitment accounts for — another calendar, or
+  // an entry we can't read. Subtracting the overridable intervals means a focus
+  // block you allow booking over doesn't leave a phantom "busy" behind, while a
+  // genuinely opaque block still blocks.
+  const overridableIntervals = events
+    .filter(e => !e.allDay && e.start && e.end && bookOver.includes(assignments.get(e.id)))
+    .map(e => ({ start: new Date(e.start), end: new Date(e.end) }));
+  const overlappingBusy = busy.filter(b => overlaps(guardStart, guardEnd, b.start, b.end));
+  const unexplainedBusy = subtractIntervals(overlappingBusy, [
+    ...overridableIntervals,
+    ...conflicts.map(e => ({ start: new Date(e.start), end: new Date(e.end) })),
+  ]);
+  if (unexplainedBusy.some(b => overlaps(guardStart, guardEnd, b.start, b.end))) {
     reasons.push({
       code: 'busy',
       detail: 'Your calendar reports you as busy then, though no event title was available.',

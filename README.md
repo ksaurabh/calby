@@ -122,12 +122,14 @@ English, and share a booking link that writes real invites to your calendar.
   grid means one time axis and one scrollbar, so the two views of a day can
   never drift out of line.
 - **"Why isn't this open?"** Click any time in an open-slots column — including
-  empty space — and the agent explains it. The reasons are worked out
-  deterministically from the same data the slots came from (outside the days or
-  hours, off the slot grid, inside the notice period, past the horizon, a named
-  calendar conflict, a buffer around one, an opaque busy block, the per-day cap,
-  already booked, or removed by the commitment-aware review); the model only
-  phrases them, so the answer can never disagree with the calendar.
+  empty space — then *Explain this slot*, and the answer appears in a popup.
+  There is only one piece of logic behind both: the generator puts every
+  candidate on the grid through `diagnoseSlot`, and a slot is offered exactly
+  when that returns no reasons against it. The explanation reads back that same
+  verdict, so the grid and the answer cannot disagree. Reasons cover the days and
+  hours, the slot grid, the notice period, the horizon, named calendar conflicts,
+  buffers, opaque busy blocks, the per-day cap, existing bookings, and removals
+  made by the commitment-aware review; the model only phrases them.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.

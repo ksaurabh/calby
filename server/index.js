@@ -22,7 +22,6 @@ import {
   updateEventTime,
 } from './calendar.js';
 import {
-  applyBookOver,
   diagnoseSlot,
   generateSlots,
   interpretGuidance,
@@ -503,14 +502,21 @@ async function availabilityFor(
         : splitCached(events, commitmentTypes));
   }
 
-  if (bookOver.length) {
-    busy = applyBookOver({ busy, events, assignments, allowedTypeIds: bookOver });
-  }
-
-  const days = generateSlots({ rules: eventType.rules, busy, now, takenStarts, durationMinutes });
-  // Everything the slot diagnosis needs, so an explanation can never disagree
-  // with the slots that were actually generated.
-  const context = { busy, events, assignments, commitmentTypes, takenStarts, now };
+  // One decision function: the generator diagnoses every candidate, and keeps
+  // the ones with no reasons against them.
+  const slotInputs = {
+    rules: eventType.rules,
+    busy,
+    now,
+    takenStarts,
+    durationMinutes,
+    events,
+    assignments,
+    commitmentTypes,
+    bookOver,
+  };
+  let { days, diagnoses } = generateSlots(slotInputs);
+  const context = { ...slotInputs, diagnoses };
   if (!apiKey || !days.length) {
     return { days, token, reviewNote: null, drops: [], ...context };
   }
@@ -527,17 +533,23 @@ async function availabilityFor(
     types: commitmentTypes.map(t => `${t.id}:${t.condition}`),
   });
 
+  // Re-run the generator with the review's drops folded in, so a dropped slot
+  // is closed by the same code that opens the others and carries its reason.
+  const withDrops = (drops) => {
+    const regenerated = generateSlots({ ...slotInputs, drops });
+    return { days: regenerated.days, diagnoses: regenerated.diagnoses, drops };
+  };
+
   const cached = cachedSlotReview(cacheKey);
   if (cached) {
-    const dropped = new Set(cached.drops.map(d => d.start));
+    const applied = withDrops(cached.drops);
     return {
-      days: days
-        .map(day => ({ ...day, slots: day.slots.filter(s => !dropped.has(s.start)) }))
-        .filter(day => day.slots.length),
+      days: applied.days,
       token,
       reviewNote: cached.note,
-      drops: cached.drops,
+      drops: applied.drops,
       ...context,
+      diagnoses: applied.diagnoses,
     };
   }
   if (review !== 'compute') return { days, token, reviewNote: null, drops: [], ...context };
@@ -555,7 +567,15 @@ async function availabilityFor(
   if (result.reviewed) {
     cacheSlotReview(cacheKey, { drops: result.drops, note: result.note });
   }
-  return { days: result.days, token, reviewNote: result.note, drops: result.drops, ...context };
+  const applied = withDrops(result.drops);
+  return {
+    days: applied.days,
+    token,
+    reviewNote: result.note,
+    drops: applied.drops,
+    ...context,
+    diagnoses: applied.diagnoses,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,31 +1241,27 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
   const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
   if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
 
-  const dayKeyIn = (value) => new Intl.DateTimeFormat('en-CA', {
-    timeZone: eventType.rules.timezone, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(new Date(value));
-
   try {
-    // Reuse exactly what the availability computation saw.
+    // Reuse exactly what the availability computation decided. Times on the slot
+    // grid already have a verdict; anything else (a click between slots, outside
+    // the window) is diagnosed with the same function.
     const availability = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
-    const dayKey = dayKeyIn(start);
-    const bookingsThatDay = (availability.takenStarts || [])
-      .filter(t => dayKeyIn(t) === dayKey).length;
-
-    const diagnosis = diagnoseSlot({
-      rules: eventType.rules,
-      start,
-      durationMinutes,
-      busy: availability.busy || [],
-      events: availability.events || [],
-      assignments: availability.assignments || new Map(),
-      commitmentTypes: availability.commitmentTypes || [],
-      bookOver: eventType.bookOverCommitmentTypeIds || [],
-      takenStarts: availability.takenStarts || [],
-      drops: availability.drops || [],
-      bookingsThatDay,
-      now: availability.now || new Date(),
-    });
+    const startIso = new Date(start).toISOString();
+    const diagnosis =
+      availability.diagnoses?.get(startIso) ||
+      diagnoseSlot({
+        rules: eventType.rules,
+        start: startIso,
+        durationMinutes,
+        busy: availability.busy || [],
+        events: availability.events || [],
+        assignments: availability.assignments || new Map(),
+        commitmentTypes: availability.commitmentTypes || [],
+        bookOver: eventType.bookOverCommitmentTypeIds || [],
+        takenStarts: availability.takenStarts || [],
+        drops: availability.drops || [],
+        now: availability.now || new Date(),
+      });
 
     const key = anthropicKeyFor(req.user.email);
     const explanation = await explainSlot({

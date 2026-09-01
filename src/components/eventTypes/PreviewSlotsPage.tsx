@@ -4,7 +4,7 @@ import { api } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
 import { AvailabilityCalendar } from '../calendar';
-import { Button } from '../common';
+import { Button, Modal } from '../common';
 
 interface Availability {
   days: SlotDay[];
@@ -25,8 +25,10 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [daysPerPage, setDaysPerPage] = useState(2);
-  // "Why isn't this time open?" — a click on any time in an open-slots column.
-  const [asking, setAsking] = useState<string | null>(null);
+  // A click marks a time; the explanation is only fetched when asked for.
+  const [picked, setPicked] = useState<string | null>(null);
+  const [showAnswer, setShowAnswer] = useState(false);
+  const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState<{
     open: boolean;
     reasons: { code: string; detail: string }[];
@@ -61,19 +63,25 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
 
   const back = () => navigate('/');
 
-  const askAboutTime = async (startIso: string) => {
-    setAsking(startIso);
+  const pickTime = (startIso: string) => {
+    setPicked(startIso);
+    setAnswer(null);
+    setAnswerError(null);
+    setShowAnswer(false);
+  };
+
+  const explainPicked = async () => {
+    if (!picked) return;
+    setShowAnswer(true);
+    setAsking(true);
     setAnswer(null);
     setAnswerError(null);
     try {
-      const result = await api.explainSlot(
-        eventTypeId,
-        startIso,
-        availability?.durationMinutes || 30
-      );
-      setAnswer(result);
+      setAnswer(await api.explainSlot(eventTypeId, picked, availability?.durationMinutes || 30));
     } catch (e) {
       setAnswerError((e as Error).message);
+    } finally {
+      setAsking(false);
     }
   };
 
@@ -198,63 +206,67 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
           days={availability.days}
           commitmentTypes={availability.commitmentTypes}
           paired
-          onPickTime={askAboutTime}
+          onPickTime={pickTime}
           snapMinutes={eventType.rules.slotIntervalMinutes}
-          selectedTime={asking}
+          selectedTime={picked}
         />
         <p className="text-xs text-gray-500 mt-2">
           Click any time in an <span className="text-emerald-700">Open slots</span> column —
-          including empty space — to ask why it is or isn't offered.
+          including empty space — then choose <em>Explain this slot</em>.
         </p>
       </div>
 
-      {asking && (
-        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h2 className="font-medium text-gray-900">
-                {formatDateTime(asking, eventType.rules.timezone)}
-              </h2>
-              <p className="text-xs text-gray-500 mt-0.5">{eventType.rules.timezone}</p>
+      {picked && (
+        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="font-medium text-gray-900">
+              {formatDateTime(picked, eventType.rules.timezone)}
             </div>
-            <button
-              onClick={() => { setAsking(null); setAnswer(null); setAnswerError(null); }}
-              className="text-sm text-gray-500 hover:text-gray-800"
-            >
-              Close
-            </button>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {availability.durationMinutes} minutes · {eventType.rules.timezone}
+            </div>
           </div>
-
-          {answerError ? (
-            <div className="mt-3 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>
-          ) : !answer ? (
-            <div className="mt-4 flex items-center gap-3 text-sm text-gray-500">
-              <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
-              Working out why…
-            </div>
-          ) : (
-            <>
-              <div className="mt-3 flex items-center gap-2">
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${
-                    answer.open ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
-                  }`}
-                >
-                  {answer.open ? 'Bookable' : 'Not offered'}
-                </span>
-              </div>
-              <p className="mt-3 text-sm text-gray-800">{answer.explanation}</p>
-              {answer.reasons.length > 0 && (
-                <ul className="mt-3 space-y-1 text-xs text-gray-500">
-                  {answer.reasons.map((reason, index) => (
-                    <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
+          <div className="flex gap-2">
+            <Button onClick={explainPicked}>Explain this slot</Button>
+            <Button variant="secondary" onClick={() => { setPicked(null); setShowAnswer(false); }}>
+              Clear
+            </Button>
+          </div>
         </div>
       )}
+
+      <Modal
+        isOpen={showAnswer}
+        onClose={() => setShowAnswer(false)}
+        title={picked ? formatDateTime(picked, eventType.rules.timezone) : ''}
+      >
+        {answerError ? (
+          <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>
+        ) : asking || !answer ? (
+          <div className="py-8 flex items-center justify-center gap-3 text-sm text-gray-500">
+            <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
+            Working out why…
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <span
+              className={`inline-block text-xs px-2 py-0.5 rounded-full ${
+                answer.open ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
+              }`}
+            >
+              {answer.open ? 'Bookable' : 'Not offered'}
+            </span>
+            <p className="text-sm text-gray-800">{answer.explanation}</p>
+            {answer.reasons.length > 0 && (
+              <ul className="space-y-1 text-xs text-gray-500 border-t border-gray-100 pt-3">
+                {answer.reasons.map((reason, index) => (
+                  <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
