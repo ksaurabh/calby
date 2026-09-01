@@ -174,17 +174,17 @@ export function rulesFromText(guidance = '') {
 
 // Ask Claude to read the guidance. Falls back to rulesFromText on any failure so
 // saving an event type never breaks because of the model or a missing key.
-export async function interpretGuidance(guidance, { timezone } = {}) {
+export async function interpretGuidance(guidance, { timezone, apiKey } = {}) {
   // The caller passes the owner's own timezone; keep it unless the model
   // overrides it from the guidance text.
   const fallback = () => ({
     rules: normalizeRules({ ...rulesFromText(guidance), timezone: timezone || DEFAULT_RULES.timezone }),
     source: 'text',
   });
-  if (!process.env.ANTHROPIC_API_KEY) return fallback();
+  if (!apiKey) return fallback();
 
   try {
-    const client = new Anthropic();
+    const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: 'claude-opus-5',
       max_tokens: 4000,

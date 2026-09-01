@@ -24,6 +24,8 @@ interface AuthState {
   canManageUsers: boolean;
   /** Names of the orgs this user is the claimed admin of. */
   orgAdminOf: string[];
+  /** Where this user's AI features get their API key. */
+  aiKeySource: 'org' | 'server' | null;
 }
 
 interface AuthContextType extends AuthState {
@@ -46,6 +48,7 @@ const initialState: AuthState = {
   isSuperAdmin: false,
   canManageUsers: false,
   orgAdminOf: [],
+  aiKeySource: null,
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -70,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isSuperAdmin: data.isSuperAdmin || false,
         canManageUsers: data.canManageUsers || false,
         orgAdminOf: data.orgAdminOf || [],
+        aiKeySource: data.aiKeySource || null,
       });
     } catch (error) {
       console.error('Auth check failed:', error);

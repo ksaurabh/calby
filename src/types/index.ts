@@ -17,6 +17,11 @@ export interface Org {
   name: string;
   slug: string;
   domain: string;
+  /** An org key covers everyone on the org's domain. Never returned in full. */
+  hasAnthropicKey?: boolean;
+  anthropicKeyHint?: string | null;
+  anthropicKeySetBy?: string | null;
+  anthropicKeySetAt?: string | null;
   /** First person on the org's domain to sign in after it was created. */
   adminEmail: string | null;
   adminClaimedAt: string | null;

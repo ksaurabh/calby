@@ -77,6 +77,12 @@ English, and share a booking link that writes real invites to your calendar.
   questions about your calendar; the server renders your entries (title, start
   and end, organizer, guests and their responses, location, commitment type) into
   the prompt, and the model sees nothing beyond that.
+- **Bring-your-own Anthropic key.** An org admin can set one Anthropic API key
+  on the Organizations page, and everyone with an email address on that org's
+  domain uses it for every AI feature. Keys are verified against Anthropic before
+  being saved, encrypted at rest, and never returned to the browser — only a
+  masked hint. Users whose org has no key fall back to the server's
+  `ANTHROPIC_API_KEY`.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -161,6 +167,8 @@ All routes require an authenticated session on an allowed domain.
 | POST | `/api/orgs` | user | Create an organization |
 | PUT | `/api/orgs/:id` | org admin/creator/admin | Rename an organization |
 | DELETE | `/api/orgs/:id` | org admin/creator/admin | Delete an organization |
+| PUT | `/api/orgs/:id/anthropic-key` | org admin | Set the org's Anthropic key |
+| DELETE | `/api/orgs/:id/anthropic-key` | org admin | Remove it |
 | GET | `/api/users` | admin, org admin | List users (org admins see their domain only) |
 | POST | `/api/users` | admin, org admin | Pre-register a user |
 | DELETE | `/api/users/:email` | admin, org admin | Remove a user |

@@ -11,6 +11,8 @@ interface OrgStore {
   createOrg: (org: OrgInput) => Promise<void>;
   updateOrg: (id: string, updates: Partial<OrgInput>) => Promise<void>;
   deleteOrg: (id: string) => Promise<void>;
+  setAnthropicKey: (id: string, apiKey: string) => Promise<void>;
+  removeAnthropicKey: (id: string) => Promise<void>;
 }
 
 export const useOrgStore = create<OrgStore>((set, get) => ({
@@ -41,5 +43,15 @@ export const useOrgStore = create<OrgStore>((set, get) => ({
   deleteOrg: async (id) => {
     await api.deleteOrg(id);
     set({ orgs: get().orgs.filter(o => o.id !== id) });
+  },
+
+  setAnthropicKey: async (id, apiKey) => {
+    const updated = await api.setOrgAnthropicKey(id, apiKey);
+    set({ orgs: get().orgs.map(o => (o.id === id ? updated : o)) });
+  },
+
+  removeAnthropicKey: async (id) => {
+    const updated = await api.removeOrgAnthropicKey(id);
+    set({ orgs: get().orgs.map(o => (o.id === id ? updated : o)) });
   },
 }));

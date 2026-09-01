@@ -139,17 +139,19 @@ const EXPLAIN_SCHEMA = {
  * A report explaining, for every commitment type, whether the event satisfies
  * it and why. Returns { summary, verdicts: [...] }.
  */
-export async function explainEventMatch({ event, commitmentTypes, timezone }) {
+export async function explainEventMatch({ event, commitmentTypes, timezone, apiKey }) {
   if (!commitmentTypes.length) {
     return { summary: 'No commitment types are defined yet.', verdicts: [] };
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    const err = new Error('Explaining a match needs ANTHROPIC_API_KEY to be configured.');
+  if (!apiKey) {
+    const err = new Error(
+      'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.'
+    );
     err.status = 501;
     throw err;
   }
 
-  const client = new Anthropic();
+  const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: 'claude-opus-5',
     max_tokens: 8000,
@@ -201,14 +203,16 @@ export async function explainEventMatch({ event, commitmentTypes, timezone }) {
  * Answer a question about the calendar. `history` is prior turns as
  * [{ role: 'user' | 'assistant', content }]. Returns the answer text.
  */
-export async function askCalendar({ question, context, history = [] }) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    const err = new Error('The calendar assistant needs ANTHROPIC_API_KEY to be configured.');
+export async function askCalendar({ question, context, history = [], apiKey }) {
+  if (!apiKey) {
+    const err = new Error(
+      'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.'
+    );
     err.status = 501;
     throw err;
   }
 
-  const client = new Anthropic();
+  const client = new Anthropic({ apiKey });
   const response = await client.messages.create({
     model: 'claude-opus-5',
     max_tokens: 4000,

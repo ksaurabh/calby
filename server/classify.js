@@ -89,7 +89,7 @@ export function classifyByKeyword(events, commitmentTypes) {
 /**
  * Map of event id -> commitment type id. Events with no match are absent.
  */
-export async function classifyEvents(events, commitmentTypes) {
+export async function classifyEvents(events, commitmentTypes, { apiKey } = {}) {
   if (!events.length || !commitmentTypes.length) return new Map();
 
   const version = fingerprint(commitmentTypes);
@@ -119,10 +119,10 @@ export async function classifyEvents(events, commitmentTypes) {
     return result;
   };
 
-  if (!process.env.ANTHROPIC_API_KEY) return applyFallback();
+  if (!apiKey) return applyFallback();
 
   try {
-    const client = new Anthropic();
+    const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: 'claude-opus-5',
       max_tokens: 8000,

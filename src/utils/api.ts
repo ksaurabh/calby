@@ -164,6 +164,15 @@ export const api = {
   deleteOrg: (id: string) =>
     request<{ success: boolean }>(`/api/orgs/${id}`, { method: 'DELETE' }),
 
+  setOrgAnthropicKey: (id: string, apiKey: string) =>
+    request<Org>(`/api/orgs/${id}/anthropic-key`, {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey }),
+    }),
+
+  removeOrgAnthropicKey: (id: string) =>
+    request<Org>(`/api/orgs/${id}/anthropic-key`, { method: 'DELETE' }),
+
   // Users
   listUsers: () =>
     request<{ users: User[]; scopedToDomains: string[] | null }>('/api/users'),

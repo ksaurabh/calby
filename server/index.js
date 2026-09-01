@@ -28,6 +28,7 @@ import {
 } from './scheduling.js';
 import { classifyEvents, clearClassificationCache } from './classify.js';
 import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
+import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -281,6 +282,34 @@ function canManageUser(req, targetEmail) {
   if (isActiveAdmin(req)) return true;
   const domain = targetEmail?.split('@')[1]?.toLowerCase();
   return !!domain && administeredDomains(req.user?.email).includes(domain);
+}
+
+// Which Anthropic key a user's model calls should run on: their organization's,
+// when an admin of it has provided one, otherwise the server-wide key from .env.
+// The org is matched on the user's email domain.
+function anthropicKeyFor(email) {
+  const domain = email?.split('@')[1]?.toLowerCase();
+  if (domain) {
+    const org = getOrgs().find(o => o.domain === domain && o.anthropicKey);
+    if (org) {
+      const key = decryptSecret(org.anthropicKey);
+      if (key) return { key, source: 'org', orgName: org.name };
+      console.error(`[orgs] could not decrypt the API key for ${org.name} — was the server secret changed?`);
+    }
+  }
+  if (process.env.ANTHROPIC_API_KEY) return { key: process.env.ANTHROPIC_API_KEY, source: 'server' };
+  return { key: null, source: null };
+}
+
+// Orgs go to the client without the sealed key — only whether one is set, and a
+// masked hint so an admin can recognise which key it is.
+function publicOrg(org) {
+  const { anthropicKey, anthropicKeyHint, ...rest } = org;
+  return {
+    ...rest,
+    hasAnthropicKey: !!anthropicKey,
+    anthropicKeyHint: anthropicKey ? anthropicKeyHint || '••••' : null,
+  };
 }
 
 // A URL-safe slug derived from the org name, e.g. "Acme Corp." -> "acme-corp".
@@ -549,6 +578,8 @@ app.get('/auth/user', (req, res) => {
     // Org admins can manage users on their org's domain without being platform
     // admins, so the frontend needs this separately from isAdmin.
     canManageUsers: allowed && canManageUsers(req),
+    // Where this user's model calls get their API key: their org, the server, or nowhere.
+    aiKeySource: allowed ? anthropicKeyFor(req.user.email).source : null,
     orgAdminOf: allowed ? orgsAdministeredBy(req.user.email).map(o => o.name) : [],
   });
 });
@@ -597,7 +628,9 @@ function requireSuperAdmin(req, res, next) {
 // can rename or delete.
 // ---------------------------------------------------------------------------
 app.get('/api/orgs', requireAuth, (req, res) => {
-  const orgs = [...getOrgs()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const orgs = [...getOrgs()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map(publicOrg);
   res.json({ orgs });
 });
 
@@ -629,7 +662,7 @@ app.post('/api/orgs', requireAuth, (req, res) => {
   };
   orgs.push(org);
   saveOrgs(orgs);
-  res.json(org);
+  res.json(publicOrg(org));
 });
 
 app.put('/api/orgs/:id', requireAuth, (req, res) => {
@@ -655,7 +688,84 @@ app.put('/api/orgs/:id', requireAuth, (req, res) => {
     updatedAt: new Date().toISOString(),
   };
   saveOrgs(orgs);
-  res.json(orgs[index]);
+  res.json(publicOrg(orgs[index]));
+});
+
+// An org admin supplies one Anthropic key for everyone on the org's domain, so
+// individual users never have to hold one. Verified against the API before it
+// is stored, then sealed — it is never sent back to a client.
+app.put('/api/orgs/:id/anthropic-key', requireAuth, async (req, res) => {
+  const orgs = getOrgs();
+  const index = orgs.findIndex(o => o.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: 'Organization not found' });
+  if (!canManageOrg(req, orgs[index])) {
+    return res.status(403).json({ error: 'Only this organization\'s admin can set its API key' });
+  }
+  if (!orgs[index].domain) {
+    return res.status(400).json({
+      error: 'Give this organization an email domain first — the key is shared with everyone on that domain.',
+    });
+  }
+  if (!canSealSecrets()) {
+    return res.status(500).json({ error: 'Set SESSION_SECRET on the server before storing API keys.' });
+  }
+
+  const apiKey = req.body.apiKey?.trim();
+  if (!apiKey) return res.status(400).json({ error: 'Paste an Anthropic API key' });
+  if (!apiKey.startsWith('sk-ant-')) {
+    return res.status(400).json({ error: 'That does not look like an Anthropic API key (they start with sk-ant-).' });
+  }
+
+  // Check the key works before saving, so a typo fails here rather than later
+  // for every user in the org.
+  try {
+    const probe = await fetch('https://api.anthropic.com/v1/models?limit=1', {
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    });
+    if (probe.status === 401 || probe.status === 403) {
+      return res.status(400).json({ error: 'Anthropic rejected that key. Check it and try again.' });
+    }
+    if (!probe.ok) {
+      const detail = await probe.json().catch(() => ({}));
+      return res.status(400).json({
+        error: detail.error?.message || `Could not verify the key (HTTP ${probe.status}).`,
+      });
+    }
+  } catch (err) {
+    return res.status(502).json({ error: `Could not reach the Anthropic API: ${err.message}` });
+  }
+
+  const now = new Date().toISOString();
+  orgs[index] = {
+    ...orgs[index],
+    anthropicKey: encryptSecret(apiKey),
+    anthropicKeyHint: maskSecret(apiKey),
+    anthropicKeySetBy: req.user.email,
+    anthropicKeySetAt: now,
+    updatedAt: now,
+  };
+  saveOrgs(orgs);
+  res.json(publicOrg(orgs[index]));
+});
+
+app.delete('/api/orgs/:id/anthropic-key', requireAuth, (req, res) => {
+  const orgs = getOrgs();
+  const index = orgs.findIndex(o => o.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: 'Organization not found' });
+  if (!canManageOrg(req, orgs[index])) {
+    return res.status(403).json({ error: 'Only this organization\'s admin can remove its API key' });
+  }
+
+  orgs[index] = {
+    ...orgs[index],
+    anthropicKey: null,
+    anthropicKeyHint: null,
+    anthropicKeySetBy: null,
+    anthropicKeySetAt: null,
+    updatedAt: new Date().toISOString(),
+  };
+  saveOrgs(orgs);
+  res.json(publicOrg(orgs[index]));
 });
 
 app.delete('/api/orgs/:id', requireAuth, (req, res) => {
@@ -872,7 +982,10 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
   if (!name) return res.status(400).json({ error: 'A name is required' });
   if (!guidance) return res.status(400).json({ error: 'Guidance is required — describe when people may book you' });
 
-  const { rules, source } = await interpretGuidance(guidance, { timezone: req.body.timezone });
+  const { rules, source } = await interpretGuidance(guidance, {
+    timezone: req.body.timezone,
+    apiKey: anthropicKeyFor(req.user.email).key,
+  });
   const now = new Date().toISOString();
   const eventTypes = getEventTypes();
   const eventType = {
@@ -909,7 +1022,10 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
   // Re-read the guidance only when it actually changed — one model call per edit.
   let { rules, rulesSource, rulesUpdatedAt } = current;
   if (guidance !== current.guidance) {
-    const interpreted = await interpretGuidance(guidance, { timezone: current.rules.timezone });
+    const interpreted = await interpretGuidance(guidance, {
+      timezone: current.rules.timezone,
+      apiKey: anthropicKeyFor(req.user.email).key,
+    });
     rules = interpreted.rules;
     rulesSource = interpreted.source;
     rulesUpdatedAt = now;
@@ -962,7 +1078,9 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
-    const assignments = await classifyEvents(events, commitmentTypes);
+    const assignments = await classifyEvents(events, commitmentTypes, {
+      apiKey: anthropicKeyFor(req.user.email).key,
+    });
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
     res.json({
@@ -1294,7 +1412,9 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   const token = await accessTokenFor(req.user.email, calendar.refreshToken);
   const events = await fetchEvents(token, from, to, { maxResults });
   const commitmentTypes = getCommitmentTypes(req.user.email);
-  const assignments = await classifyEvents(events, commitmentTypes);
+  const assignments = await classifyEvents(events, commitmentTypes, {
+    apiKey: anthropicKeyFor(req.user.email).key,
+  });
   return { events, commitmentTypes, assignments };
 }
 
@@ -1331,6 +1451,7 @@ app.post('/api/calendar/ask', requireAuth, async (req, res) => {
       question,
       context,
       history: Array.isArray(req.body.history) ? req.body.history : [],
+      apiKey: anthropicKeyFor(req.user.email).key,
     });
     res.json({ answer, eventsConsidered: events.length, timezone });
   } catch (err) {
@@ -1355,6 +1476,7 @@ app.post('/api/calendar/explain', requireAuth, async (req, res) => {
       event,
       commitmentTypes,
       timezone: ownerTimezone(req.user.email),
+      apiKey: anthropicKeyFor(req.user.email).key,
     });
     res.json({ event, ...report });
   } catch (err) {

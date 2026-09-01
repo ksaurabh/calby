@@ -1,14 +1,18 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useOrgStore } from '../../store/orgStore';
 import type { Org } from '../../types';
 import { formatDate } from '../../utils/format';
 import { Button, Modal } from '../common';
+import { OrgApiKey } from './OrgApiKey';
 import { OrgForm } from './OrgForm';
 
 export function OrgsPage() {
-  const { user, isAdmin } = useAuth();
-  const { orgs, isLoading, error, fetchOrgs, createOrg, updateOrg, deleteOrg } = useOrgStore();
+  const { user, isAdmin, aiKeySource } = useAuth();
+  const {
+    orgs, isLoading, error, fetchOrgs, createOrg, updateOrg, deleteOrg,
+    setAnthropicKey, removeAnthropicKey,
+  } = useOrgStore();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Org | null>(null);
 
@@ -66,6 +70,13 @@ export function OrgsPage() {
             {orgs.length} total — an org is administered by the first person on its
             email domain to sign in after it is created.
           </p>
+          <p className="text-xs text-gray-500 mt-1">
+            {aiKeySource === 'org'
+              ? 'AI features are running on your organization’s Anthropic key.'
+              : aiKeySource === 'server'
+                ? 'AI features are running on the server’s Anthropic key. An org admin can supply their own below.'
+                : 'No Anthropic key is configured, so the assistant and guidance parsing are unavailable. An org admin can add one below.'}
+          </p>
         </div>
         <Button onClick={() => { setEditing(null); setShowForm(true); }}>+ New organization</Button>
       </div>
@@ -95,7 +106,8 @@ export function OrgsPage() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {orgs.map(org => (
-                <tr key={org.id} className="hover:bg-gray-50">
+                <Fragment key={org.id}>
+                <tr className="hover:bg-gray-50">
                   <td className="px-6 py-3">
                     <div className="font-medium text-gray-900">{org.name}</div>
                     <div className="text-xs text-gray-400">{org.slug}</div>
@@ -104,7 +116,7 @@ export function OrgsPage() {
                   <td className="px-6 py-3 text-gray-600">{adminCell(org)}</td>
                   <td className="px-6 py-3 text-gray-600">{org.createdBy}</td>
                   <td className="px-6 py-3 text-gray-600">{formatDate(org.createdAt)}</td>
-                  <td className="px-6 py-3 text-right whitespace-nowrap">
+                  <td className="px-6 py-3 text-right whitespace-nowrap align-top">
                     {canModify(org) && (
                       <>
                         <Button
@@ -118,6 +130,18 @@ export function OrgsPage() {
                     )}
                   </td>
                 </tr>
+                {canModify(org) && (
+                  <tr>
+                    <td colSpan={5} className="px-6 pb-4 pt-0">
+                      <OrgApiKey
+                        org={org}
+                        onSave={apiKey => setAnthropicKey(org.id, apiKey)}
+                        onRemove={() => removeAnthropicKey(org.id)}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>
