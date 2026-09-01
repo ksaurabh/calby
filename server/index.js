@@ -6,7 +6,23 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { randomBytes } from 'crypto';
 import 'dotenv/config';
+import {
+  CALENDAR_SCOPES,
+  accessTokenFor,
+  consentUrl,
+  createEvent,
+  exchangeCode,
+  fetchBusy,
+  forgetAccessToken,
+  generateState,
+} from './calendar.js';
+import {
+  generateSlots,
+  interpretGuidance,
+  slotIsAvailable,
+} from './scheduling.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,6 +35,8 @@ const DOMAINS_FILE = join(__dirname, 'allowed-domains.json');
 const SUPER_ADMINS_FILE = join(__dirname, 'super-admins.json');
 const USERS_FILE = join(__dirname, 'users.json');
 const ORGS_FILE = join(__dirname, 'orgs.json');
+const EVENT_TYPES_FILE = join(__dirname, 'event-types.json');
+const BOOKINGS_FILE = join(__dirname, 'bookings.json');
 
 // Domains that can always sign in (hardcoded)
 const ALWAYS_ALLOWED_DOMAINS = ['airmdr.com'];
@@ -40,6 +58,12 @@ if (!existsSync(USERS_FILE)) {
 }
 if (!existsSync(ORGS_FILE)) {
   writeFileSync(ORGS_FILE, JSON.stringify({ orgs: [] }, null, 2));
+}
+if (!existsSync(EVENT_TYPES_FILE)) {
+  writeFileSync(EVENT_TYPES_FILE, JSON.stringify({ eventTypes: [] }, null, 2));
+}
+if (!existsSync(BOOKINGS_FILE)) {
+  writeFileSync(BOOKINGS_FILE, JSON.stringify({ bookings: [] }, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +281,84 @@ function slugify(name) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ---------------------------------------------------------------------------
+// Event types and bookings
+// ---------------------------------------------------------------------------
+function getEventTypes() {
+  return readJson(EVENT_TYPES_FILE, { eventTypes: [] }).eventTypes || [];
+}
+
+function saveEventTypes(eventTypes) {
+  writeFileSync(EVENT_TYPES_FILE, JSON.stringify({ eventTypes }, null, 2));
+}
+
+function getBookings() {
+  return readJson(BOOKINGS_FILE, { bookings: [] }).bookings || [];
+}
+
+function saveBookings(bookings) {
+  writeFileSync(BOOKINGS_FILE, JSON.stringify({ bookings }, null, 2));
+}
+
+// The public part of a booking URL: 16 random characters, unguessable, and the
+// only thing standing between a stranger and the page — so it comes from a CSPRNG.
+function generatePublicSlug() {
+  const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ';
+  const bytes = randomBytes(16);
+  let out = '';
+  for (let i = 0; i < 16; i++) out += alphabet[bytes[i] % alphabet.length];
+  return out;
+}
+
+// What a booking page may see. Never leaks the owner's guidance or email.
+function publicEventType(eventType, ownerName) {
+  return {
+    name: eventType.name,
+    description: eventType.description || '',
+    ownerName,
+    durationMinutes: eventType.rules.durationMinutes,
+    timezone: eventType.rules.timezone,
+    availabilitySummary: eventType.rules.summary || '',
+  };
+}
+
+// The calendar credentials stored on a user record, if they connected one.
+function calendarFor(email) {
+  return findUser(email)?.calendar || null;
+}
+
+function saveCalendarFor(email, calendar) {
+  const users = getUsers();
+  const index = users.findIndex(u => u.email === email.toLowerCase());
+  if (index < 0) return;
+  users[index] = { ...users[index], calendar };
+  saveUsers(users);
+}
+
+// Busy time + open slots for one event type. Shared by the owner's preview and
+// the public booking page.
+async function availabilityFor(eventType) {
+  const calendar = calendarFor(eventType.ownerEmail);
+  if (!calendar?.refreshToken) {
+    const err = new Error('The owner has not connected a calendar yet.');
+    err.status = 409;
+    throw err;
+  }
+
+  const now = new Date();
+  const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
+  const token = await accessTokenFor(eventType.ownerEmail, calendar.refreshToken);
+  const busy = await fetchBusy(token, now, horizonEnd);
+
+  // Bookings we made are already on the calendar, but freeBusy can lag a moment;
+  // excluding them explicitly avoids handing out the same slot twice.
+  const takenStarts = getBookings()
+    .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled')
+    .map(b => b.start);
+
+  return { days: generateSlots({ rules: eventType.rules, busy, now, takenStarts }), token };
+}
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -621,6 +723,261 @@ app.delete('/api/domains/:domain', requireSuperAdmin, (req, res) => {
   const domains = getAllowedDomains().filter(d => d !== req.params.domain.toLowerCase());
   saveAllowedDomains(domains);
   res.json({ domains, alwaysAllowed: ALWAYS_ALLOWED_DOMAINS });
+});
+
+
+// ---------------------------------------------------------------------------
+// Calendar connection (explicit, separate from sign-in)
+// ---------------------------------------------------------------------------
+app.get('/api/calendar/status', requireAuth, (req, res) => {
+  const calendar = calendarFor(req.user.email);
+  res.json({
+    connected: !!calendar?.refreshToken,
+    connectedAt: calendar?.connectedAt || null,
+    scopes: CALENDAR_SCOPES,
+  });
+});
+
+app.get('/api/calendar/connect', requireAuth, (req, res) => {
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ error: 'GOOGLE_CLIENT_ID is not configured' });
+  }
+  const state = generateState();
+  req.session.calendarState = state;
+  req.session.save(err => {
+    if (err) return res.status(500).json({ error: 'Could not start the calendar connection' });
+    res.redirect(consentUrl(state));
+  });
+});
+
+app.get('/api/calendar/callback', async (req, res) => {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5178';
+  const fail = reason => res.redirect(`${clientUrl}/event-types?calendar=${reason}`);
+
+  if (!req.user) return fail('signin_required');
+  if (!req.query.code || req.query.state !== req.session.calendarState) return fail('failed');
+  delete req.session.calendarState;
+
+  try {
+    const tokens = await exchangeCode(req.query.code);
+    saveCalendarFor(req.user.email, {
+      refreshToken: tokens.refresh_token,
+      scopes: (tokens.scope || '').split(' ').filter(Boolean),
+      connectedAt: new Date().toISOString(),
+    });
+    forgetAccessToken(req.user.email);
+    res.redirect(`${clientUrl}/event-types?calendar=connected`);
+  } catch (err) {
+    console.error('[calendar] connect failed:', err.message);
+    fail('failed');
+  }
+});
+
+app.delete('/api/calendar/connect', requireAuth, (req, res) => {
+  saveCalendarFor(req.user.email, null);
+  forgetAccessToken(req.user.email);
+  res.json({ connected: false });
+});
+
+// ---------------------------------------------------------------------------
+// Event types — a name plus plain-text guidance, which Claude turns into rules
+// ---------------------------------------------------------------------------
+app.get('/api/event-types', requireAuth, (req, res) => {
+  const mine = getEventTypes()
+    .filter(e => e.ownerEmail === req.user.email.toLowerCase())
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  res.json({ eventTypes: mine });
+});
+
+app.post('/api/event-types', requireAuth, async (req, res) => {
+  const name = req.body.name?.trim();
+  const guidance = req.body.guidance?.trim() || '';
+  if (!name) return res.status(400).json({ error: 'A name is required' });
+  if (!guidance) return res.status(400).json({ error: 'Guidance is required — describe when people may book you' });
+
+  const { rules, source } = await interpretGuidance(guidance, { timezone: req.body.timezone });
+  const now = new Date().toISOString();
+  const eventTypes = getEventTypes();
+  const eventType = {
+    id: generateId('evt'),
+    ownerEmail: req.user.email.toLowerCase(),
+    name,
+    description: req.body.description?.trim() || '',
+    guidance,
+    slug: generatePublicSlug(),
+    rules,
+    rulesSource: source,
+    rulesUpdatedAt: now,
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+  eventTypes.push(eventType);
+  saveEventTypes(eventTypes);
+  res.json(eventType);
+});
+
+app.put('/api/event-types/:id', requireAuth, async (req, res) => {
+  const eventTypes = getEventTypes();
+  const index = eventTypes.findIndex(
+    e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (index < 0) return res.status(404).json({ error: 'Event type not found' });
+
+  const current = eventTypes[index];
+  const guidance = req.body.guidance?.trim() ?? current.guidance;
+  const now = new Date().toISOString();
+
+  // Re-read the guidance only when it actually changed — one model call per edit.
+  let { rules, rulesSource, rulesUpdatedAt } = current;
+  if (guidance !== current.guidance) {
+    const interpreted = await interpretGuidance(guidance, { timezone: current.rules.timezone });
+    rules = interpreted.rules;
+    rulesSource = interpreted.source;
+    rulesUpdatedAt = now;
+  }
+
+  eventTypes[index] = {
+    ...current,
+    name: req.body.name?.trim() || current.name,
+    description: req.body.description?.trim() ?? current.description,
+    guidance,
+    active: typeof req.body.active === 'boolean' ? req.body.active : current.active,
+    rules,
+    rulesSource,
+    rulesUpdatedAt,
+    updatedAt: now,
+  };
+  saveEventTypes(eventTypes);
+  res.json(eventTypes[index]);
+});
+
+app.delete('/api/event-types/:id', requireAuth, (req, res) => {
+  const eventTypes = getEventTypes();
+  const eventType = eventTypes.find(
+    e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  saveEventTypes(eventTypes.filter(e => e.id !== eventType.id));
+  res.json({ success: true });
+});
+
+// The owner's own preview of what visitors would see.
+app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
+  const eventType = getEventTypes().find(
+    e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  try {
+    const { days } = await availabilityFor(eventType);
+    res.json({ days, rules: eventType.rules });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Bookings taken against the signed-in user's event types.
+app.get('/api/bookings', requireAuth, (req, res) => {
+  const mine = new Set(
+    getEventTypes().filter(e => e.ownerEmail === req.user.email.toLowerCase()).map(e => e.id)
+  );
+  const bookings = getBookings()
+    .filter(b => mine.has(b.eventTypeId))
+    .sort((a, b) => b.start.localeCompare(a.start));
+  res.json({ bookings });
+});
+
+// ---------------------------------------------------------------------------
+// Public booking page — no authentication, addressed only by the 16-char slug
+// ---------------------------------------------------------------------------
+function findBySlug(slug) {
+  return getEventTypes().find(e => e.slug === slug && e.active);
+}
+
+app.get('/api/book/:slug', async (req, res) => {
+  const eventType = findBySlug(req.params.slug);
+  if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });
+
+  const owner = findUser(eventType.ownerEmail);
+  try {
+    const { days } = await availabilityFor(eventType);
+    res.json({ eventType: publicEventType(eventType, owner?.name || 'the host'), days });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+app.post('/api/book/:slug', async (req, res) => {
+  const eventType = findBySlug(req.params.slug);
+  if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });
+
+  const name = req.body.name?.trim();
+  const email = req.body.email?.toLowerCase().trim();
+  const notes = req.body.notes?.trim() || '';
+  const start = req.body.start;
+
+  if (!name) return res.status(400).json({ error: 'Your name is required' });
+  if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+  if (!start || Number.isNaN(Date.parse(start))) return res.status(400).json({ error: 'Pick a time slot' });
+
+  try {
+    // Re-check against the live calendar: the slot may have been taken between
+    // the page loading and this submission.
+    const { days, token } = await availabilityFor(eventType);
+    if (!slotIsAvailable(new Date(start).toISOString(), days)) {
+      return res.status(409).json({ error: 'That time was just taken. Please pick another slot.' });
+    }
+
+    const startDate = new Date(start);
+    const endDate = new Date(startDate.getTime() + eventType.rules.durationMinutes * 60_000);
+    const owner = findUser(eventType.ownerEmail);
+
+    const event = await createEvent(token, {
+      summary: `${eventType.name} — ${name}`,
+      description: [
+        `Booked via Calby by ${name} <${email}>.`,
+        notes && `\nNotes:\n${notes}`,
+      ].filter(Boolean).join('\n'),
+      start: startDate,
+      end: endDate,
+      timeZone: eventType.rules.timezone,
+      attendee: { email, name },
+    });
+
+    const booking = {
+      id: generateId('booking'),
+      eventTypeId: eventType.id,
+      eventTypeName: eventType.name,
+      ownerEmail: eventType.ownerEmail,
+      name,
+      email,
+      notes,
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
+      timezone: eventType.rules.timezone,
+      googleEventId: event.id || null,
+      googleEventLink: event.htmlLink || null,
+      status: 'confirmed',
+      createdAt: new Date().toISOString(),
+    };
+    saveBookings([...getBookings(), booking]);
+
+    res.json({
+      ok: true,
+      booking: {
+        start: booking.start,
+        end: booking.end,
+        timezone: booking.timezone,
+        name: booking.name,
+        email: booking.email,
+        eventTypeName: eventType.name,
+        ownerName: owner?.name || 'the host',
+      },
+    });
+  } catch (err) {
+    console.error('[booking] failed:', err.message);
+    res.status(err.status === 409 ? 409 : 502).json({ error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------

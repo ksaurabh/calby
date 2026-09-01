@@ -1,0 +1,1 @@
+export { EventTypesPage } from './EventTypesPage';

@@ -1,3 +1,3 @@
-export type View = 'orgs' | 'admin';
+export type View = 'orgs' | 'event-types' | 'admin';
 
-export const ALL_VIEWS: View[] = ['orgs', 'admin'];
+export const ALL_VIEWS: View[] = ['orgs', 'event-types', 'admin'];

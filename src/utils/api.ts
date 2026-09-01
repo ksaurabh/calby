@@ -1,4 +1,15 @@
-import type { Org, OrgInput, Role, User } from '../types';
+import type {
+  Booking,
+  CalendarStatus,
+  EventType,
+  EventTypeInput,
+  Org,
+  OrgInput,
+  PublicEventType,
+  Role,
+  SlotDay,
+  User,
+} from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -27,6 +38,39 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ role }),
     }),
+
+  // Calendar connection
+  calendarStatus: () => request<CalendarStatus>('/api/calendar/status'),
+
+  disconnectCalendar: () =>
+    request<{ connected: boolean }>('/api/calendar/connect', { method: 'DELETE' }),
+
+  // Event types
+  listEventTypes: () => request<{ eventTypes: EventType[] }>('/api/event-types'),
+
+  createEventType: (data: EventTypeInput) =>
+    request<EventType>('/api/event-types', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateEventType: (id: string, data: Partial<EventTypeInput>) =>
+    request<EventType>(`/api/event-types/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deleteEventType: (id: string) =>
+    request<{ success: boolean }>(`/api/event-types/${id}`, { method: 'DELETE' }),
+
+  eventTypeAvailability: (id: string) =>
+    request<{ days: SlotDay[] }>(`/api/event-types/${id}/availability`),
+
+  listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
+
+  // Public booking page (no authentication)
+  bookingPage: (slug: string) =>
+    request<{ eventType: PublicEventType; days: SlotDay[] }>(`/api/book/${slug}`),
+
+  book: (slug: string, data: { start: string; name: string; email: string; notes: string }) =>
+    request<{ ok: boolean; booking: { start: string; end: string; timezone: string; name: string; email: string; eventTypeName: string; ownerName: string } }>(
+      `/api/book/${slug}`,
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
 
   // Orgs
   listOrgs: () => request<{ orgs: Org[] }>('/api/orgs'),

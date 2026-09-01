@@ -4,12 +4,20 @@ import type { View } from './types/view';
 import { ALL_VIEWS } from './types/view';
 import { Layout } from './components/layout';
 import { OrgsPage } from './components/orgs';
+import { EventTypesPage } from './components/eventTypes';
+import { BookingPage } from './components/booking';
 import { AdminPage } from './components/admin';
 import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './components/auth';
 
 function viewFromPath(pathname: string): View {
   const seg = pathname.replace(/^\/+/, '').split('/')[0];
   return (ALL_VIEWS as string[]).includes(seg) ? (seg as View) : 'orgs';
+}
+
+/** /book/<16-char slug> is the public booking page. */
+function bookingSlug(pathname: string): string | null {
+  const match = pathname.match(/^\/book\/([A-Za-z0-9]{16})\/?$/);
+  return match ? match[1] : null;
 }
 
 function pathFromView(view: View): string {
@@ -35,7 +43,9 @@ function AppContent() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Public route (no auth required) — the OAuth callback landing page
+  // Public routes (no auth required)
+  const slug = bookingSlug(window.location.pathname);
+  if (slug) return <BookingPage slug={slug} />;
   if (window.location.pathname === '/auth/callback') return <AuthCallback />;
 
   if (isLoading) {
@@ -61,6 +71,7 @@ function AppContent() {
   return (
     <Layout currentView={effectiveView} onViewChange={setCurrentView}>
       {effectiveView === 'orgs' && <OrgsPage />}
+      {effectiveView === 'event-types' && <EventTypesPage />}
       {effectiveView === 'admin' && <AdminPage />}
     </Layout>
   );

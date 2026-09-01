@@ -129,7 +129,8 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Everything else (incl. /auth/callback, which is a frontend route) → SPA
+    # Everything else — the SPA. Includes /auth/callback and /book/<slug>,
+    # which are frontend routes, not backend ones.
     location / {
         try_files $uri $uri/ /index.html;
     }
