@@ -133,13 +133,13 @@ export async function fetchBusy(token, timeMin, timeMax) {
 
 // The owner's actual events in a window — titles included, for their own
 // availability preview. The public booking page never sees these.
-export async function fetchEvents(token, timeMin, timeMax) {
+export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } = {}) {
   const params = new URLSearchParams({
     timeMin: timeMin.toISOString(),
     timeMax: timeMax.toISOString(),
     singleEvents: 'true',      // expand recurring events into instances
     orderBy: 'startTime',
-    maxResults: '250',
+    maxResults: String(maxResults),
   });
   const data = await calendarFetch(token, `/calendars/primary/events?${params}`);
   return (data.items || [])
@@ -151,6 +151,24 @@ export async function fetchEvents(token, timeMin, timeMax) {
       allDay: !e.start?.dateTime,
       start: e.start?.dateTime || e.start?.date || null,
       end: e.end?.dateTime || e.end?.date || null,
+      location: e.location || '',
+      // Who put it in the calendar, and who was invited.
+      organizer: e.organizer
+        ? { email: e.organizer.email || '', name: e.organizer.displayName || '', self: !!e.organizer.self }
+        : null,
+      creator: e.creator
+        ? { email: e.creator.email || '', name: e.creator.displayName || '', self: !!e.creator.self }
+        : null,
+      attendees: (e.attendees || []).map(a => ({
+        email: a.email || '',
+        name: a.displayName || '',
+        responseStatus: a.responseStatus || 'needsAction',
+        organizer: !!a.organizer,
+        self: !!a.self,
+        optional: !!a.optional,
+      })),
+      recurring: !!e.recurringEventId,
+      link: e.htmlLink || null,
     }))
     .filter(e => e.start && e.end);
 }

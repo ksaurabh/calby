@@ -93,8 +93,51 @@ export interface CalendarEvent {
   allDay: boolean;
   start: string;
   end: string;
+  location?: string;
+  organizer?: EventPerson | null;
+  creator?: EventPerson | null;
+  attendees?: EventAttendee[];
+  recurring?: boolean;
+  link?: string | null;
   /** Which commitment type this entry was judged to satisfy, if any. */
   commitmentTypeId?: string | null;
+}
+
+export interface EventAttendee {
+  email: string;
+  name: string;
+  responseStatus: string;
+  organizer: boolean;
+  self: boolean;
+  optional: boolean;
+}
+
+export interface EventPerson {
+  email: string;
+  name: string;
+  self: boolean;
+}
+
+/** One commitment type's verdict on a single calendar entry. */
+export interface CommitmentVerdict {
+  commitmentTypeId: string;
+  name: string;
+  color: string;
+  condition: string;
+  matches: boolean;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+}
+
+export interface EventExplanation {
+  event: CalendarEvent;
+  summary: string;
+  verdicts: CommitmentVerdict[];
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
 }
 
 /** A plain-text condition describing a kind of calendar entry, plus a colour. */

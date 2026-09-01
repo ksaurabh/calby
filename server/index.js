@@ -27,6 +27,7 @@ import {
   slotIsAvailable,
 } from './scheduling.js';
 import { classifyEvents, clearClassificationCache } from './classify.js';
+import { askCalendar, buildCalendarContext, explainEventMatch } from './assistant.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1257,6 +1258,110 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
   }
 });
 
+
+// ---------------------------------------------------------------------------
+// The owner's calendar: entries in a window, labelled by commitment type, plus
+// a question-answering endpoint over the same data.
+// ---------------------------------------------------------------------------
+// A sensible default window for browsing and for questions: last week through
+// the next four.
+const CALENDAR_WINDOW = { back: 7, forward: 28 };
+
+function calendarWindow(query = {}) {
+  const back = Math.min(90, Math.max(0, Number(query.back) || CALENDAR_WINDOW.back));
+  const forward = Math.min(180, Math.max(1, Number(query.forward) || CALENDAR_WINDOW.forward));
+  const now = new Date();
+  return {
+    from: new Date(now.getTime() - back * 86400_000),
+    to: new Date(now.getTime() + forward * 86400_000),
+  };
+}
+
+// The timezone to read the calendar in: whichever the owner's event types use,
+// else the app default.
+function ownerTimezone(email) {
+  const mine = getEventTypes().filter(e => e.ownerEmail === email.toLowerCase());
+  return mine[0]?.rules?.timezone || 'America/Los_Angeles';
+}
+
+async function ownerEvents(req, { from, to, maxResults = 250 }) {
+  const calendar = calendarFor(req.user.email);
+  if (!calendar?.refreshToken) {
+    const err = new Error('Connect your Google Calendar first.');
+    err.status = 409;
+    throw err;
+  }
+  const token = await accessTokenFor(req.user.email, calendar.refreshToken);
+  const events = await fetchEvents(token, from, to, { maxResults });
+  const commitmentTypes = getCommitmentTypes(req.user.email);
+  const assignments = await classifyEvents(events, commitmentTypes);
+  return { events, commitmentTypes, assignments };
+}
+
+app.get('/api/calendar/events', requireAuth, async (req, res) => {
+  const { from, to } = calendarWindow(req.query);
+  try {
+    const { events, commitmentTypes, assignments } = await ownerEvents(req, { from, to });
+    res.json({
+      events: events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
+      commitmentTypes,
+      timezone: ownerTimezone(req.user.email),
+      from: from.toISOString(),
+      to: to.toISOString(),
+    });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Ask a question about the calendar. The entries are rendered into the prompt —
+// the model gets titles, times, organizers, guests and responses, and nothing
+// beyond the owner's own calendar.
+app.post('/api/calendar/ask', requireAuth, async (req, res) => {
+  const question = req.body.question?.trim();
+  if (!question) return res.status(400).json({ error: 'Ask a question' });
+  if (question.length > 2000) return res.status(400).json({ error: 'That question is too long' });
+
+  const { from, to } = calendarWindow(req.body);
+  try {
+    const { events, commitmentTypes, assignments } = await ownerEvents(req, { from, to });
+    const timezone = ownerTimezone(req.user.email);
+    const context = buildCalendarContext({ events, timezone, commitmentTypes, assignments });
+    const answer = await askCalendar({
+      question,
+      context,
+      history: Array.isArray(req.body.history) ? req.body.history : [],
+    });
+    res.json({ answer, eventsConsidered: events.length, timezone });
+  } catch (err) {
+    console.error('[assistant] failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Explain one entry against every commitment type: does it satisfy the
+// condition, and on what evidence.
+app.post('/api/calendar/explain', requireAuth, async (req, res) => {
+  const eventId = req.body.eventId;
+  if (!eventId) return res.status(400).json({ error: 'Pick an event' });
+
+  const { from, to } = calendarWindow(req.body);
+  try {
+    const { events, commitmentTypes } = await ownerEvents(req, { from, to });
+    const event = events.find(e => e.id === eventId);
+    if (!event) return res.status(404).json({ error: 'That event is not in the current window.' });
+
+    const report = await explainEventMatch({
+      event,
+      commitmentTypes,
+      timezone: ownerTimezone(req.user.email),
+    });
+    res.json({ event, ...report });
+  } catch (err) {
+    console.error('[assistant] explain failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Commitment types — plain-text conditions describing what a calendar entry is,

@@ -2,8 +2,10 @@ import type {
   Booking,
   CalendarEvent,
   CalendarStatus,
+  ChatMessage,
   CommitmentType,
   CommitmentTypeInput,
+  EventExplanation,
   EventType,
   EventTypeInput,
   ManagedBooking,
@@ -49,6 +51,28 @@ export const api = {
 
   disconnectCalendar: () =>
     request<{ connected: boolean }>('/api/calendar/connect', { method: 'DELETE' }),
+
+  // The owner's own calendar, labelled by commitment type
+  calendarEvents: () =>
+    request<{
+      events: CalendarEvent[];
+      commitmentTypes: CommitmentType[];
+      timezone: string;
+      from: string;
+      to: string;
+    }>('/api/calendar/events'),
+
+  askCalendar: (question: string, history: ChatMessage[]) =>
+    request<{ answer: string; eventsConsidered: number; timezone: string }>('/api/calendar/ask', {
+      method: 'POST',
+      body: JSON.stringify({ question, history }),
+    }),
+
+  explainEvent: (eventId: string) =>
+    request<EventExplanation>('/api/calendar/explain', {
+      method: 'POST',
+      body: JSON.stringify({ eventId }),
+    }),
 
   // Commitment types
   listCommitmentTypes: () =>

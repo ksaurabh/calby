@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { CalendarEvent, CommitmentType, SchedulingRules, SlotDay } from '../../types';
+import type { CalendarEvent, CommitmentType, SlotDay } from '../../types';
 import {
   dateKeyInZone,
   dateKeyRange,
@@ -10,12 +10,25 @@ import {
 } from '../../utils/calendar';
 import { Button } from '../common';
 
+/** The span the grid covers, independent of any one event type. */
+export interface CalendarWindow {
+  timezone: string;
+  /** Default vertical range, widened to fit any meeting outside it. */
+  startMinute: number;
+  endMinute: number;
+  /** How many weeks of paging to allow. */
+  weeks: number;
+}
+
 interface AvailabilityCalendarProps {
-  days: SlotDay[];
+  /** Bookable slots. Omit to show the calendar on its own. */
+  days?: SlotDay[];
   events: CalendarEvent[];
-  rules: SchedulingRules;
+  window: CalendarWindow;
   /** Colours entries whose commitment condition they satisfy. */
   commitmentTypes?: CommitmentType[];
+  /** When given, meeting blocks become clickable. */
+  onSelectEvent?: (event: CalendarEvent) => void;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -30,6 +43,7 @@ interface Block {
   /** Commitment type colour, when the entry matched one. */
   color?: string;
   typeName?: string;
+  event?: CalendarEvent;
 }
 
 /** Unmatched entries keep the neutral grey. */
@@ -49,12 +63,13 @@ function blockStyle(color?: string) {
  * opened up against what their calendar already holds.
  */
 export function AvailabilityCalendar({
-  days,
+  days = [],
   events,
-  rules,
+  window: calendarWindow,
   commitmentTypes = [],
+  onSelectEvent,
 }: AvailabilityCalendarProps) {
-  const tz = rules.timezone;
+  const tz = calendarWindow.timezone;
   const [pageOffset, setPageOffset] = useState(0);
 
   const typeById = useMemo(
@@ -94,13 +109,13 @@ export function AvailabilityCalendar({
 
   const dateKeys = dateKeyRange(tz, pageOffset * DAYS_PER_PAGE, DAYS_PER_PAGE);
   const todayKey = todayKeyInZone(tz);
-  const lastPage = Math.max(0, Math.ceil((rules.horizonWeeks * 7) / DAYS_PER_PAGE) - 1);
+  const lastPage = Math.max(0, Math.ceil((calendarWindow.weeks * 7) / DAYS_PER_PAGE) - 1);
 
   // Vertical range: the bookable window, widened to include any meeting that
   // falls outside it, so nothing on the calendar is silently cropped.
   const { fromMinute, toMinute } = useMemo(() => {
-    let from = rules.startMinute;
-    let to = rules.endMinute;
+    let from = calendarWindow.startMinute;
+    let to = calendarWindow.endMinute;
     for (const key of dateKeys) {
       for (const event of timedByDate.get(key) || []) {
         const startsToday = dateKeyInZone(event.start, tz) === key;
@@ -113,7 +128,7 @@ export function AvailabilityCalendar({
       fromMinute: Math.max(0, Math.floor(from / 60) * 60),
       toMinute: Math.min(24 * 60, Math.ceil(to / 60) * 60),
     };
-  }, [dateKeys, timedByDate, rules.startMinute, rules.endMinute, tz]);
+  }, [dateKeys, timedByDate, calendarWindow.startMinute, calendarWindow.endMinute, tz]);
 
   const totalMinutes = Math.max(60, toMinute - fromMinute);
   const gridHeight = (totalMinutes / 60) * HOUR_HEIGHT;
@@ -137,6 +152,7 @@ export function AvailabilityCalendar({
         sublabel: minuteLabel(startMin),
         color: type?.color,
         typeName: type?.name,
+        event,
       };
     });
 
@@ -172,15 +188,18 @@ export function AvailabilityCalendar({
           </Button>
         </div>
         <div className="text-xs text-gray-500">
-          {openCount} open slot{openCount === 1 ? '' : 's'} this week · times in {tz}
+          {days.length > 0 && `${openCount} open slot${openCount === 1 ? '' : 's'} this week · `}
+          times in {tz}
         </div>
       </div>
 
       <div className="flex items-center gap-4 gap-y-2 mb-3 text-xs text-gray-600 flex-wrap">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded bg-emerald-100 border border-emerald-400" />
-          Bookable
-        </span>
+        {days.length > 0 && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded bg-emerald-100 border border-emerald-400" />
+            Bookable
+          </span>
+        )}
         {commitmentTypes.map(type => (
           <span key={type.id} className="flex items-center gap-1.5">
             <span
@@ -258,23 +277,33 @@ export function AvailabilityCalendar({
                     />
                   ))}
 
-                  {meetings.map(block => (
-                    <div
-                      key={block.key}
-                      className="absolute left-0.5 right-0.5 rounded border px-1 overflow-hidden"
-                      style={{ top: block.top, height: block.height, ...blockStyle(block.color) }}
-                      title={[block.label, block.sublabel, block.typeName && `· ${block.typeName}`]
-                        .filter(Boolean)
-                        .join(' ')}
-                    >
-                      <div className="text-[10px] font-medium truncate">{block.label}</div>
-                      {block.height > 28 && (
-                        <div className="text-[10px] opacity-75 truncate">
-                          {block.typeName || block.sublabel}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                  {meetings.map(block => {
+                    const clickable = !!onSelectEvent && !!block.event;
+                    const Tag = clickable ? 'button' : 'div';
+                    return (
+                      <Tag
+                        key={block.key}
+                        onClick={clickable ? () => onSelectEvent!(block.event!) : undefined}
+                        className={`absolute left-0.5 right-0.5 rounded border px-1 overflow-hidden text-left ${
+                          clickable ? 'cursor-pointer hover:brightness-95' : ''
+                        }`}
+                        style={{ top: block.top, height: block.height, ...blockStyle(block.color) }}
+                        title={[
+                          block.label,
+                          block.sublabel,
+                          block.typeName && `· ${block.typeName}`,
+                          clickable && '· click to explain',
+                        ].filter(Boolean).join(' ')}
+                      >
+                        <div className="text-[10px] font-medium truncate">{block.label}</div>
+                        {block.height > 28 && (
+                          <div className="text-[10px] opacity-75 truncate">
+                            {block.typeName || block.sublabel}
+                          </div>
+                        )}
+                      </Tag>
+                    );
+                  })}
 
                   {open.map(block => (
                     <div

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CommitmentType } from '../../types';
+import type { CalendarEvent, CommitmentType, EventExplanation } from '../../types';
 import { api } from '../../utils/api';
+import { AvailabilityCalendar } from '../calendar';
 import { Button, Modal } from '../common';
+import { CalendarChat } from './CalendarChat';
+import { EventExplanationReport } from './EventExplanation';
 
 const inputClass =
   'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
@@ -28,6 +31,29 @@ export function CommitmentTypesPage() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Calendar + per-event report
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [timezone, setTimezone] = useState('UTC');
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [explaining, setExplaining] = useState<CalendarEvent | null>(null);
+  const [explanation, setExplanation] = useState<EventExplanation | null>(null);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  const loadCalendar = useCallback(async () => {
+    setCalendarLoading(true);
+    try {
+      const data = await api.calendarEvents();
+      setEvents(data.events);
+      setTimezone(data.timezone);
+      setCalendarError(null);
+    } catch (e) {
+      setCalendarError((e as Error).message);
+    } finally {
+      setCalendarLoading(false);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const data = await api.listCommitmentTypes();
@@ -43,7 +69,25 @@ export function CommitmentTypesPage() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
-  }, [load]);
+    loadCalendar();
+  }, [load, loadCalendar]);
+
+  // Colours and conditions changed, so the calendar's labelling is stale.
+  const refreshAll = async () => {
+    await load();
+    await loadCalendar();
+  };
+
+  const explainEvent = async (event: CalendarEvent) => {
+    setExplaining(event);
+    setExplanation(null);
+    setExplainError(null);
+    try {
+      setExplanation(await api.explainEvent(event.id));
+    } catch (e) {
+      setExplainError((e as Error).message);
+    }
+  };
 
   const openNew = (preset?: { name: string; condition: string }) =>
     setForm({
@@ -63,7 +107,7 @@ export function CommitmentTypesPage() {
       if (form.id) await api.updateCommitmentType(form.id, payload);
       else await api.createCommitmentType(payload);
       setForm(null);
-      await load();
+      await refreshAll();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -74,7 +118,7 @@ export function CommitmentTypesPage() {
   const remove = async (commitmentType: CommitmentType) => {
     if (!window.confirm(`Delete "${commitmentType.name}"?`)) return;
     await api.deleteCommitmentType(commitmentType.id);
-    await load();
+    await refreshAll();
   };
 
   return (
@@ -147,6 +191,55 @@ export function CommitmentTypesPage() {
           ))}
         </div>
       )}
+
+      {/* Calendar coloured by commitment type, plus the assistant */}
+      <div className="mt-8 grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="font-semibold text-gray-900">Your calendar</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Coloured by commitment type. Click an entry for a report on how it scores
+                against every type.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
+          </div>
+
+          {calendarError ? (
+            <div className="rounded-lg bg-amber-50 text-amber-800 px-4 py-3 text-sm">{calendarError}</div>
+          ) : calendarLoading ? (
+            <div className="py-10 text-center text-gray-500">Loading your calendar…</div>
+          ) : (
+            <AvailabilityCalendar
+              events={events}
+              commitmentTypes={commitmentTypes}
+              window={{ timezone, startMinute: 8 * 60, endMinute: 19 * 60, weeks: 4 }}
+              onSelectEvent={explainEvent}
+            />
+          )}
+        </div>
+
+        <CalendarChat />
+      </div>
+
+      <Modal
+        isOpen={!!explaining}
+        onClose={() => { setExplaining(null); setExplanation(null); setExplainError(null); }}
+        title="Commitment report"
+        size="wide"
+      >
+        {explainError ? (
+          <div className="rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">{explainError}</div>
+        ) : explanation ? (
+          <EventExplanationReport explanation={explanation} timezone={timezone} />
+        ) : (
+          <div className="py-10 text-center text-gray-500">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3" />
+            Judging “{explaining?.summary}” against each commitment type…
+          </div>
+        )}
+      </Modal>
 
       <Modal
         isOpen={!!form}

@@ -8,7 +8,7 @@ import type {
 } from '../../types';
 import { api } from '../../utils/api';
 import { Button, Modal } from '../common';
-import { AvailabilityCalendar } from './AvailabilityCalendar';
+import { AvailabilityCalendar } from '../calendar';
 import { EventTypeForm } from './EventTypeForm';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
@@ -311,7 +311,12 @@ export function EventTypesPage() {
             <AvailabilityCalendar
               days={preview.days}
               events={preview.events}
-              rules={preview.eventType.rules}
+              window={{
+                timezone: preview.eventType.rules.timezone,
+                startMinute: preview.eventType.rules.startMinute,
+                endMinute: preview.eventType.rules.endMinute,
+                weeks: preview.eventType.rules.horizonWeeks,
+              }}
               commitmentTypes={preview.commitmentTypes}
             />
           </>

@@ -70,6 +70,13 @@ English, and share a booking link that writes real invites to your calendar.
   accordingly, with a legend; unmatched entries stay grey. Results are cached by
   title so repeat previews don't re-ask the model, and without an API key the
   labelling falls back to keyword overlap.
+- **Calendar view and assistant.** The commitment types page shows your calendar
+  for the last week and the next four, coloured by commitment type. Clicking any
+  entry produces a report judging it against *every* commitment type — match or
+  not, a confidence, and the evidence used. Alongside it, a chat box answers
+  questions about your calendar; the server renders your entries (title, start
+  and end, organizer, guests and their responses, location, commitment type) into
+  the prompt, and the model sees nothing beyond that.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
@@ -138,6 +145,9 @@ All routes require an authenticated session on an allowed domain.
 | DELETE | `/api/event-types/:id` | owner | Delete one |
 | GET | `/api/event-types/:id/availability` | owner | Preview your open slots |
 | GET | `/api/bookings` | user | Bookings taken on your event types |
+| GET | `/api/calendar/events` | user | Your entries, labelled by commitment type |
+| POST | `/api/calendar/ask` | user | Ask a question about your calendar |
+| POST | `/api/calendar/explain` | user | Report one entry against every type |
 | GET | `/api/commitment-types` | user | List your commitment types + palette |
 | POST | `/api/commitment-types` | user | Create one |
 | PUT | `/api/commitment-types/:id` | owner | Update name, condition or colour |
