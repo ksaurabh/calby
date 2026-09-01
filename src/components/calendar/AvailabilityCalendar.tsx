@@ -41,6 +41,16 @@ interface AvailabilityCalendarProps {
   showControls?: boolean;
   /** Render only the toolbar — for driving two calendars from one control row. */
   controlsOnly?: boolean;
+  /**
+   * Keep the events for sizing the time axis but don't paint them. Two
+   * calendars given the same events then agree on their vertical range, so 9am
+   * on one lines up with 9am on the other.
+   */
+  hideEvents?: boolean;
+  /** Let a parent own the scrolling, so one scrollbar can drive both halves. */
+  scrollable?: boolean;
+  /** Hide the legend when a parent renders a shared one. */
+  showLegend?: boolean;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -86,6 +96,9 @@ export function AvailabilityCalendar({
   onPageOffsetChange,
   showControls = true,
   controlsOnly = false,
+  hideEvents = false,
+  scrollable = true,
+  showLegend = true,
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
   const [ownOffset, setOwnOffset] = useState(0);
@@ -248,7 +261,7 @@ export function AvailabilityCalendar({
         </div>
       )}
 
-      {!controlsOnly && (
+      {showLegend && (
       <div className="flex items-center gap-4 gap-y-2 mb-3 text-xs text-gray-600 flex-wrap">
         {days.length > 0 && (
           <span className="flex items-center gap-1.5">
@@ -276,7 +289,7 @@ export function AvailabilityCalendar({
       )}
 
       {!controlsOnly && (
-      <div className="border border-gray-200 rounded-lg overflow-x-auto">
+      <div className={`border border-gray-200 rounded-lg ${scrollable ? 'overflow-x-auto' : ''}`}>
         <div style={{ minWidth: Math.max(280, 90 * daysPerPage + 56) }}>
           {/* Column headers */}
           <div className="flex border-b border-gray-200 bg-gray-50 sticky top-0 z-10">
@@ -299,7 +312,7 @@ export function AvailabilityCalendar({
               <div className="w-14 shrink-0 px-1 py-1 text-[10px] text-gray-400 text-right">all-day</div>
               {dateKeys.map(key => (
                 <div key={key} className="flex-1 border-l border-gray-200 p-1 space-y-1">
-                  {(allDayByDate.get(key) || []).map(event => (
+                  {!hideEvents && (allDayByDate.get(key) || []).map(event => (
                     <div key={event.id} className="text-[10px] truncate rounded bg-gray-200 text-gray-700 px-1 py-0.5">
                       {event.summary}
                     </div>
@@ -348,7 +361,7 @@ export function AvailabilityCalendar({
                     </div>
                   ))}
 
-                  {meetings.map(block => {
+                  {!hideEvents && meetings.map(block => {
                     const clickable = !!onSelectEvent && !!block.event;
                     const Tag = clickable ? 'button' : 'div';
                     return (

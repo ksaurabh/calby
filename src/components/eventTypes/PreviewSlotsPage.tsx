@@ -166,31 +166,51 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
       <div className="bg-white rounded-xl border border-gray-200 p-4 mb-4">
         <AvailabilityCalendar
           {...shared}
-          events={[]}
+          events={availability.events}
+          days={availability.days}
           commitmentTypes={availability.commitmentTypes}
           controlsOnly
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <h2 className="text-sm font-medium text-gray-900 mb-3">
+      {/*
+        Both halves get the same events and the same window, so their time axes
+        are identical — the right one just doesn't paint the meetings. One
+        scroll container wraps the pair, so a single scrollbar moves both.
+      */}
+      <div className="bg-white rounded-xl border border-gray-200">
+        <div className="grid grid-cols-2 gap-4 px-4 pt-4">
+          <h2 className="text-sm font-medium text-gray-900">
             Your calendar
             <span className="font-normal text-gray-500"> — what is already booked</span>
           </h2>
-          <AvailabilityCalendar
-            {...shared}
-            events={availability.events}
-            commitmentTypes={availability.commitmentTypes}
-            showControls={false}
-          />
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
-          <h2 className="text-sm font-medium text-gray-900 mb-3">
+          <h2 className="text-sm font-medium text-gray-900">
             Open slots
             <span className="font-normal text-gray-500"> — what visitors can book</span>
           </h2>
-          <AvailabilityCalendar {...shared} events={[]} days={availability.days} showControls={false} />
+        </div>
+
+        <div className="overflow-auto max-h-[70vh] p-4">
+          <div className="grid grid-cols-2 gap-4 min-w-max">
+            <AvailabilityCalendar
+              {...shared}
+              events={availability.events}
+              commitmentTypes={availability.commitmentTypes}
+              showControls={false}
+              showLegend={false}
+              scrollable={false}
+            />
+            <AvailabilityCalendar
+              {...shared}
+              events={availability.events}
+              days={availability.days}
+              commitmentTypes={availability.commitmentTypes}
+              hideEvents
+              showControls={false}
+              showLegend={false}
+              scrollable={false}
+            />
+          </div>
         </div>
       </div>
     </div>
