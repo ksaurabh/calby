@@ -141,9 +141,39 @@ function effectiveRole(email) {
   return user?.role || 'user';
 }
 
-function isAdmin(email) {
-  const role = effectiveRole(email);
+// ---------------------------------------------------------------------------
+// Active role
+// ---------------------------------------------------------------------------
+// A privileged user picks, at sign-in, whether to act with their full rights or
+// as an ordinary member. The choice lives in the session and is enforced by the
+// authorization middleware below — so "sign in as user" genuinely closes the
+// admin endpoints rather than only hiding them in the UI.
+const ROLE_RANK = { user: 0, admin: 1, super_admin: 2 };
+
+// The roles this account may act as: its own, plus plain 'user'.
+function availableRoles(email) {
+  const actual = effectiveRole(email);
+  return actual === 'user' ? ['user'] : [actual, 'user'];
+}
+
+// The role in force for this request. A session choice can only ever reduce
+// privilege, never raise it, so a stale or forged value is harmless.
+function activeRole(req) {
+  const actual = effectiveRole(req.user?.email);
+  const chosen = req.session?.activeRole;
+  if (chosen && ROLE_RANK[chosen] !== undefined && ROLE_RANK[chosen] < ROLE_RANK[actual]) {
+    return chosen;
+  }
+  return actual;
+}
+
+function isActiveAdmin(req) {
+  const role = activeRole(req);
   return role === 'admin' || role === 'super_admin';
+}
+
+function isActiveSuperAdmin(req) {
+  return activeRole(req) === 'super_admin';
 }
 
 // Whether a signed-in session user may use the app.
@@ -256,7 +286,9 @@ app.get('/auth/user', (req, res) => {
     });
   }
 
-  const role = effectiveRole(req.user.email);
+  const actualRole = effectiveRole(req.user.email);
+  const roles = allowed ? availableRoles(req.user.email) : ['user'];
+  const role = allowed ? activeRole(req) : actualRole;
   res.json({
     authenticated: true,
     allowed,
@@ -266,8 +298,30 @@ app.get('/auth/user', (req, res) => {
       role,
     },
     role,
+    actualRole,
+    availableRoles: roles,
+    // The frontend shows the role picker while this is true.
+    needsRoleChoice: allowed && roles.length > 1 && !req.session.activeRole,
     isAdmin: role === 'admin' || role === 'super_admin',
     isSuperAdmin: role === 'super_admin',
+  });
+});
+
+// Choose (or switch) the role to act as for the rest of the session.
+// Lives under /api/ so it is covered by the existing nginx proxy block.
+app.post('/api/session/role', (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isUserAllowed(req.user)) return res.status(403).json({ error: 'Access not allowed' });
+
+  const role = req.body.role;
+  if (!availableRoles(req.user.email).includes(role)) {
+    return res.status(400).json({ error: 'That role is not available to this account' });
+  }
+
+  req.session.activeRole = role;
+  req.session.save(err => {
+    if (err) return res.status(500).json({ error: 'Could not save the role selection' });
+    res.json({ ok: true, role, actualRole: effectiveRole(req.user.email) });
   });
 });
 
@@ -282,13 +336,13 @@ function requireAuth(req, res, next) {
 
 function requireAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAdmin(req.user.email)) return res.status(403).json({ error: 'Admin access required' });
+  if (!isActiveAdmin(req)) return res.status(403).json({ error: 'Admin access required' });
   next();
 }
 
 function requireSuperAdmin(req, res, next) {
   if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isSuperAdmin(req.user.email)) return res.status(403).json({ error: 'Super admin access required' });
+  if (!isActiveSuperAdmin(req)) return res.status(403).json({ error: 'Super admin access required' });
   next();
 }
 
@@ -332,7 +386,7 @@ app.put('/api/orgs/:id', requireAuth, (req, res) => {
   const orgs = getOrgs();
   const index = orgs.findIndex(o => o.id === req.params.id);
   if (index < 0) return res.status(404).json({ error: 'Organization not found' });
-  if (orgs[index].createdBy !== req.user.email && !isAdmin(req.user.email)) {
+  if (orgs[index].createdBy !== req.user.email && !isActiveAdmin(req)) {
     return res.status(403).json({ error: 'Only the creator or an admin can edit this organization' });
   }
 
@@ -358,7 +412,7 @@ app.delete('/api/orgs/:id', requireAuth, (req, res) => {
   const orgs = getOrgs();
   const org = orgs.find(o => o.id === req.params.id);
   if (!org) return res.status(404).json({ error: 'Organization not found' });
-  if (org.createdBy !== req.user.email && !isAdmin(req.user.email)) {
+  if (org.createdBy !== req.user.email && !isActiveAdmin(req)) {
     return res.status(403).json({ error: 'Only the creator or an admin can delete this organization' });
   }
   saveOrgs(orgs.filter(o => o.id !== org.id));

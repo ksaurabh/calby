@@ -1,9 +1,14 @@
+import { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
+import { RolePicker } from '../auth';
+import { ROLE_LABELS } from '../../utils/roles';
 
 export function Header() {
-  const { user, role, logout } = useAuth();
+  const { user, role, availableRoles, logout } = useAuth();
+  const [switching, setSwitching] = useState(false);
 
-  const roleLabel = role === 'super_admin' ? 'Super Admin' : role === 'admin' ? 'Admin' : 'Member';
+  const roleLabel = ROLE_LABELS[role];
+  const canSwitch = availableRoles.length > 1;
 
   return (
     <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 sticky top-0 z-30">
@@ -15,7 +20,17 @@ export function Header() {
       <div className="flex items-center gap-3">
         <div className="text-right hidden sm:block">
           <div className="text-sm font-medium text-gray-900">{user?.name}</div>
-          <div className="text-xs text-gray-500">{roleLabel}</div>
+          {canSwitch ? (
+            <button
+              onClick={() => setSwitching(true)}
+              className="text-xs text-blue-600 hover:text-blue-800"
+              title="Switch role"
+            >
+              {roleLabel} · switch
+            </button>
+          ) : (
+            <div className="text-xs text-gray-500">{roleLabel}</div>
+          )}
         </div>
         {user?.picture ? (
           <img src={user.picture} alt={user.name} className="w-9 h-9 rounded-full" />
@@ -31,6 +46,12 @@ export function Header() {
           Sign out
         </button>
       </div>
+
+      {switching && (
+        <div className="fixed inset-0 z-50">
+          <RolePicker onCancel={() => setSwitching(false)} />
+        </div>
+      )}
     </header>
   );
 }

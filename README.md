@@ -16,6 +16,11 @@ A minimal React + Express app: sign in with Google, create organizations.
 - **Roles.** `super_admin` (from `server/super-admins.json`, plus the hardcoded
   bootstrap list in `server/index.js`) > `admin` (granted by a super admin) >
   `user`.
+- **Role selection at sign-in.** An account holding `admin` or `super_admin` is
+  asked which capacity to act in for the session, and can switch any time from
+  the header. The choice is stored on the session and enforced by the API — a
+  super admin acting as a member gets 403s from the admin endpoints, not just a
+  reduced menu. A choice can only lower privilege, never raise it.
 
 ## Run locally
 
@@ -58,6 +63,7 @@ All routes require an authenticated session on an allowed domain.
 | GET | `/auth/google` | public | Start Google sign-in |
 | GET | `/auth/user` | public | Current session + role |
 | GET | `/auth/logout` | public | Sign out |
+| POST | `/api/session/role` | user | Choose the role to act as this session |
 | GET | `/api/orgs` | user | List organizations |
 | POST | `/api/orgs` | user | Create an organization |
 | PUT | `/api/orgs/:id` | creator/admin | Rename an organization |

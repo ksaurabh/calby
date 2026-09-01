@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import type { Role, User } from '../types';
+import { api } from '../utils/api';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -9,7 +10,14 @@ interface AuthState {
   isAuthenticated: boolean;
   isAllowed: boolean;
   user: User | null;
+  /** The role currently in force — what the user chose to act as. */
   role: Role;
+  /** The role the account actually holds, regardless of the current choice. */
+  actualRole: Role;
+  /** Roles this account may act as; more than one means the picker applies. */
+  availableRoles: Role[];
+  /** True until a privileged user has picked a role for this session. */
+  needsRoleChoice: boolean;
   isAdmin: boolean;
   isSuperAdmin: boolean;
 }
@@ -18,6 +26,7 @@ interface AuthContextType extends AuthState {
   login: () => void;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
+  chooseRole: (role: Role) => Promise<void>;
 }
 
 const initialState: AuthState = {
@@ -26,6 +35,9 @@ const initialState: AuthState = {
   isAllowed: false,
   user: null,
   role: 'user',
+  actualRole: 'user',
+  availableRoles: ['user'],
+  needsRoleChoice: false,
   isAdmin: false,
   isSuperAdmin: false,
 };
@@ -45,6 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAllowed: data.allowed || false,
         user: data.user || null,
         role: data.role || 'user',
+        actualRole: data.actualRole || data.role || 'user',
+        availableRoles: data.availableRoles || ['user'],
+        needsRoleChoice: data.needsRoleChoice || false,
         isAdmin: data.isAdmin || false,
         isSuperAdmin: data.isSuperAdmin || false,
       });
@@ -64,6 +79,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = `${API_URL}/auth/google`;
   };
 
+  // Pick the role to act as. The server stores it on the session and enforces
+  // it, so re-reading auth state afterwards keeps the client in step.
+  const chooseRole = async (role: Role) => {
+    await api.setActiveRole(role);
+    await checkAuth();
+  };
+
   const logout = async () => {
     try {
       await fetch(`${API_URL}/auth/logout`, { credentials: 'include' });
@@ -74,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ ...state, login, logout, checkAuth }}>
+    <AuthContext.Provider value={{ ...state, login, logout, checkAuth, chooseRole }}>
       {children}
     </AuthContext.Provider>
   );

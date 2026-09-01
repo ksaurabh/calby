@@ -1,4 +1,4 @@
-import type { Org, OrgInput, User } from '../types';
+import type { Org, OrgInput, Role, User } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -21,6 +21,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  // Session
+  setActiveRole: (role: Role) =>
+    request<{ ok: boolean; role: Role; actualRole: Role }>('/api/session/role', {
+      method: 'POST',
+      body: JSON.stringify({ role }),
+    }),
+
   // Orgs
   listOrgs: () => request<{ orgs: Org[] }>('/api/orgs'),
 

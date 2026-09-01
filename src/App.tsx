@@ -5,7 +5,7 @@ import { ALL_VIEWS } from './types/view';
 import { Layout } from './components/layout';
 import { OrgsPage } from './components/orgs';
 import { AdminPage } from './components/admin';
-import { LoginPage, UnauthorizedPage, AuthCallback } from './components/auth';
+import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './components/auth';
 
 function viewFromPath(pathname: string): View {
   const seg = pathname.replace(/^\/+/, '').split('/')[0];
@@ -17,7 +17,7 @@ function pathFromView(view: View): string {
 }
 
 function AppContent() {
-  const { isLoading, isAuthenticated, isAllowed, isAdmin } = useAuth();
+  const { isLoading, isAuthenticated, isAllowed, isAdmin, needsRoleChoice } = useAuth();
 
   const [currentView, setCurrentViewState] = useState<View>(() => viewFromPath(window.location.pathname));
 
@@ -51,6 +51,8 @@ function AppContent() {
 
   if (!isAuthenticated) return <LoginPage />;
   if (!isAllowed) return <UnauthorizedPage />;
+  // Privileged accounts choose which role to act as before entering the app.
+  if (needsRoleChoice) return <RolePicker />;
 
   // Guard the admin-only view
   const effectiveView: View = currentView === 'admin' && !isAdmin ? 'orgs' : currentView;
