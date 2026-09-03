@@ -74,8 +74,10 @@ export function BookingScheduler({
   }
 
   return (
-    <div className="flex flex-col md:flex-row gap-6">
-      <div className="md:flex-1 md:max-w-sm">
+    // Twice the height of the original picker, so the month and the times list
+    // both have room rather than the times scrolling in a short column.
+    <div className="flex flex-col md:flex-row gap-6 md:min-h-[42rem]">
+      <div className="md:flex-1 md:max-w-md">
         <h2 className="font-medium text-gray-900 mb-4">Select a Date &amp; Time</h2>
         <MonthCalendar
           availableDates={availableDates}
@@ -90,9 +92,9 @@ export function BookingScheduler({
         </div>
       </div>
 
-      <div className="md:w-56 md:border-l md:border-gray-100 md:pl-6">
+      <div className="md:w-64 md:border-l md:border-gray-100 md:pl-6">
         <div className="text-sm font-medium text-gray-900 mb-3">{dayHeading}</div>
-        <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+        <div className="space-y-2 max-h-[48rem] overflow-y-auto pr-1">
           {times.map(start => (
             <div key={start}>
               <button

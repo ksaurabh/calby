@@ -73,7 +73,7 @@ export function ManageBookingPage({ token, mode }: { token: string; mode: 'cance
 
   const shell = (children: React.ReactNode) => (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 px-4 py-10">
-      <div className={`${mode === 'reschedule' ? 'max-w-4xl' : 'max-w-2xl'} mx-auto`}>{children}</div>
+      <div className={`${mode === 'reschedule' ? 'max-w-[67rem]' : 'max-w-2xl'} mx-auto`}>{children}</div>
     </div>
   );
 

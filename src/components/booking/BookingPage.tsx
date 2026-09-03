@@ -98,7 +98,9 @@ export function BookingPage({ slug }: { slug: string }) {
     }
   };
 
-  const shell = (children: React.ReactNode, width = 'max-w-4xl') => (
+  // 20% wider than the old max-w-4xl (56rem), and the picker inside is twice
+  // as tall — see BookingScheduler.
+  const shell = (children: React.ReactNode, width = 'max-w-[67rem]') => (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 to-blue-50 px-4 py-10">
       <div className={`${width} mx-auto`}>{children}</div>
     </div>
