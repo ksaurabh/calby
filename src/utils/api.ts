@@ -159,6 +159,24 @@ export const api = {
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
+  suggestSlots: (
+    eventTypeId: string,
+    options: { count: number; fromBusinessDay: number; toBusinessDay: number; durationMinutes: number }
+  ) =>
+    request<{
+      slots: { start: string; end: string }[];
+      consideredDays: string[];
+      totalAvailable: number;
+      count: number;
+      fromBusinessDay: number;
+      toBusinessDay: number;
+      durationMinutes: number;
+      timezone: string;
+    }>(`/api/event-types/${eventTypeId}/suggest-slots`, {
+      method: 'POST',
+      body: JSON.stringify(options),
+    }),
+
   explainSlot: (eventTypeId: string, start: string, durationMinutes: number) =>
     request<{
       start: string;

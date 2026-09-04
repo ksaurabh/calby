@@ -27,6 +27,7 @@ import {
   interpretGuidance,
   reviewSlots,
   slotIsAvailable,
+  slotsInBusinessDays,
 } from './scheduling.js';
 import { usageEntries } from './llm.js';
 import {
@@ -1221,6 +1222,44 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
       // What the commitment-aware review did to the candidate slots.
       reviewNote,
       drops,
+    });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// The first N open slots inside a business-day window — "six times in the next
+// five business days", or "in 5 to 10 business days", where the window then
+// starts on the fifth business day.
+app.post('/api/event-types/:id/suggest-slots', requireAuth, async (req, res) => {
+  const eventType = getEventTypes().find(
+    e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
+  );
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+
+  const count = Math.min(20, Math.max(1, Number(req.body.count) || 6));
+  const from = Math.min(30, Math.max(1, Number(req.body.fromBusinessDay) || 1));
+  const to = Math.min(30, Math.max(from, Number(req.body.toBusinessDay) || from));
+  const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
+  try {
+    const availability = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
+    const result = slotsInBusinessDays({
+      days: availability.days,
+      count,
+      from,
+      to,
+      timezone: eventType.rules.timezone,
+      now: availability.now || new Date(),
+    });
+    res.json({
+      ...result,
+      count,
+      fromBusinessDay: from,
+      toBusinessDay: to,
+      durationMinutes,
+      timezone: eventType.rules.timezone,
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });

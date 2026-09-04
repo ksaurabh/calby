@@ -121,6 +121,13 @@ English, and share a booking link that writes real invites to your calendar.
   (schedule), Monday (open slots), Tuesday (schedule), Tuesday (open slots). One
   grid means one time axis and one scrollbar, so the two views of a day can
   never drift out of line.
+- **Suggest times.** On the preview page, ask for the next N open slots within a
+  business-day window — "6 slots within the next 5 business days" — and copy the
+  list for an email. Give a range instead ("5–10 business days") and the window
+  starts on the fifth business day, so nothing sooner is offered. Today counts as
+  business day 1 when it is a weekday; weekends are skipped, holidays are not.
+  Suggestions are drawn from the generated slots, so they are always genuinely
+  bookable.
 - **"Why isn't this open?"** Click any time in an open-slots column — including
   empty space — then *Explain this slot*, and the answer appears in a popup.
   There is only one piece of logic behind both: the generator puts every
@@ -197,6 +204,7 @@ All routes require an authenticated session on an allowed domain.
 | PUT | `/api/event-types/:id` | owner | Update; re-interprets changed guidance |
 | DELETE | `/api/event-types/:id` | owner | Delete one |
 | GET | `/api/event-types/:id/availability` | owner | Preview your open slots |
+| POST | `/api/event-types/:id/suggest-slots` | owner | First N open slots in a business-day window |
 | POST | `/api/event-types/:id/slot-explanation` | owner | Why a given time is or isn't offered |
 | GET | `/api/bookings` | user | Bookings taken on your event types |
 | GET | `/api/calendar/events` | user | Your entries, coloured from cache (no model call) |

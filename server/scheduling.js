@@ -352,6 +352,43 @@ export function generateSlots({
   return { days, diagnoses };
 }
 
+/**
+ * The date keys of a run of business days (Monday to Friday), counted in the
+ * given timezone. Today counts as business day 1 when it is a weekday,
+ * otherwise the next weekday does — so "within the next 5 business days"
+ * includes what is left of today.
+ */
+export function businessDayKeys({ from, to, timezone, now = new Date() }) {
+  const first = Math.max(1, Math.floor(from));
+  const last = Math.max(first, Math.floor(to));
+  const keys = [];
+
+  let index = 0;
+  // 60 calendar days is far more than 30 business days, the cap on `to`.
+  for (let offset = 0; offset <= 60 && index < last; offset++) {
+    const at = new Date(now.getTime() + offset * 86400_000);
+    const { weekday, isoDate } = zonedParts(at, timezone);
+    if (weekday === 0 || weekday === 6) continue; // Sunday, Saturday
+    index++;
+    if (index >= first) keys.push(isoDate);
+  }
+  return keys;
+}
+
+/**
+ * The first `count` open slots that fall inside a business-day window.
+ * `days` is what generateSlots produced, so this only ever narrows what is
+ * genuinely bookable.
+ */
+export function slotsInBusinessDays({ days, count, from, to, timezone, now = new Date() }) {
+  const keys = new Set(businessDayKeys({ from, to, timezone, now }));
+  const slots = days
+    .filter(day => keys.has(day.date))
+    .flatMap(day => day.slots)
+    .sort((a, b) => a.start.localeCompare(b.start));
+  return { slots: slots.slice(0, count), consideredDays: [...keys].sort(), totalAvailable: slots.length };
+}
+
 // Is this exact start still offered? Used to re-check at booking time.
 export function slotIsAvailable(startIso, days) {
   return days.some(d => d.slots.some(s => s.start === startIso));

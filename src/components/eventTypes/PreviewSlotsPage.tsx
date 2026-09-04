@@ -4,6 +4,7 @@ import { api } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
 import { AvailabilityCalendar } from '../calendar';
+import { SuggestSlots } from './SuggestSlots';
 import { Button, Modal } from '../common';
 
 interface Availability {
@@ -193,6 +194,10 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
           full, or the guidance is narrower than you intended.
         </div>
       )}
+
+      <div className="mb-4">
+        <SuggestSlots eventType={eventType} durationMinutes={availability.durationMinutes} />
+      </div>
 
       {/*
         One grid, one time axis: each day appears twice — the schedule as it
