@@ -410,6 +410,30 @@ function generatePublicSlug() {
   return out;
 }
 
+// Colleagues whose calendars an event type may also be checked against:
+// everyone else on the owner's email domain who has connected a calendar.
+// Only free/busy is ever read from them — never their event titles.
+function colleaguesFor(email) {
+  const domain = email?.toLowerCase().split('@')[1];
+  if (!domain) return [];
+  return getUsers()
+    .filter(u => u.email !== email.toLowerCase() && u.domain === domain)
+    .map(u => ({
+      email: u.email,
+      name: u.name || u.email,
+      picture: u.picture || null,
+      calendarConnected: !!u.calendar?.refreshToken,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Keep only colleagues who are genuinely on the owner's domain and reachable.
+function ownColleagueEmails(email, emails) {
+  if (!Array.isArray(emails)) return [];
+  const allowed = new Set(colleaguesFor(email).filter(c => c.calendarConnected).map(c => c.email));
+  return [...new Set(emails.map(e => String(e).toLowerCase()).filter(e => allowed.has(e)))];
+}
+
 // Keep only ids that are actually this owner's commitment types.
 function ownCommitmentTypeIds(email, ids) {
   if (!Array.isArray(ids)) return [];
@@ -487,6 +511,27 @@ async function availabilityFor(
     .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
+  // Colleagues this event type also books for. Their free/busy is fetched with
+  // their own stored credentials, so nobody's calendar is read without them
+  // having connected it themselves — and only busy intervals come back, never
+  // titles or attendees.
+  const colleagues = await Promise.all(
+    (eventType.colleagueEmails || []).map(async colleagueEmail => {
+      const user = findUser(colleagueEmail);
+      const base = { email: colleagueEmail, name: user?.name || colleagueEmail, busy: [] };
+      if (!user?.calendar?.refreshToken) {
+        return { ...base, error: 'no calendar connected' };
+      }
+      try {
+        const colleagueToken = await accessTokenFor(colleagueEmail, user.calendar.refreshToken);
+        return { ...base, busy: await fetchBusy(colleagueToken, now, horizonEnd) };
+      } catch (err) {
+        console.error(`[availability] colleague ${colleagueEmail} busy fetch failed:`, err.message);
+        return { ...base, error: err.message };
+      }
+    })
+  );
+
   const apiKey = anthropicKeyFor(eventType.ownerEmail).key;
   const bookOver = eventType.bookOverCommitmentTypeIds || [];
   const commitmentTypes = getCommitmentTypes(eventType.ownerEmail);
@@ -515,6 +560,7 @@ async function availabilityFor(
     assignments,
     commitmentTypes,
     bookOver,
+    colleagues,
   };
   let { days, diagnoses } = generateSlots(slotInputs);
   const context = { ...slotInputs, diagnoses };
@@ -532,6 +578,9 @@ async function availabilityFor(
     slots: days.flatMap(d => d.slots.map(s => s.start)),
     events: events.map(e => `${e.id}:${e.start}:${e.end}:${e.summary}:${assignments.get(e.id) || ''}`),
     types: commitmentTypes.map(t => `${t.id}:${t.condition}`),
+    colleagues: colleagues.map(c =>
+      `${c.email}:${c.error || c.busy.map(b => `${b.start.toISOString()}-${b.end.toISOString()}`).join(',')}`
+    ),
   });
 
   // Re-run the generator with the review's drops folded in, so a dropped slot
@@ -1082,6 +1131,12 @@ app.delete('/api/calendar/connect', requireAuth, (req, res) => {
 // ---------------------------------------------------------------------------
 // Event types — a name plus plain-text guidance, which Claude turns into rules
 // ---------------------------------------------------------------------------
+// Who else on your domain can be added to an event type, and whether their
+// calendar is connected — an event type can only check a connected one.
+app.get('/api/colleagues', requireAuth, (req, res) => {
+  res.json({ colleagues: colleaguesFor(req.user.email) });
+});
+
 app.get('/api/event-types', requireAuth, (req, res) => {
   const mine = getEventTypes()
     .filter(e => e.ownerEmail === req.user.email.toLowerCase())
@@ -1111,6 +1166,8 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
     externalName: req.body.externalName?.trim() || name,
     // Commitment types whose entries this event type may be booked over.
     bookOverCommitmentTypeIds: ownCommitmentTypeIds(req.user.email, req.body.bookOverCommitmentTypeIds),
+    // Colleagues who must also be free for a slot to be offered.
+    colleagueEmails: ownColleagueEmails(req.user.email, req.body.colleagueEmails),
     description: req.body.description?.trim() || '',
     guidance,
     slug: generatePublicSlug(),
@@ -1159,6 +1216,9 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
     bookOverCommitmentTypeIds: req.body.bookOverCommitmentTypeIds
       ? ownCommitmentTypeIds(req.user.email, req.body.bookOverCommitmentTypeIds)
       : current.bookOverCommitmentTypeIds || [],
+    colleagueEmails: req.body.colleagueEmails
+      ? ownColleagueEmails(req.user.email, req.body.colleagueEmails)
+      : current.colleagueEmails || [],
     description: req.body.description?.trim() ?? current.description,
     guidance,
     active: typeof req.body.active === 'boolean' ? req.body.active : current.active,
@@ -1299,6 +1359,7 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
         bookOver: eventType.bookOverCommitmentTypeIds || [],
         takenStarts: availability.takenStarts || [],
         drops: availability.drops || [],
+        colleagues: availability.colleagues || [],
         now: availability.now || new Date(),
       });
 

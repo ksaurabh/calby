@@ -66,6 +66,8 @@ export interface EventType {
   slug: string;
   /** Commitment types whose entries may be booked over. */
   bookOverCommitmentTypeIds: string[];
+  /** Colleagues who must also be free for a slot to be offered. */
+  colleagueEmails: string[];
   rules: SchedulingRules;
   rulesSource: 'claude' | 'text';
   rulesUpdatedAt: string;
@@ -82,6 +84,16 @@ export interface EventTypeInput {
   active?: boolean;
   timezone?: string;
   bookOverCommitmentTypeIds?: string[];
+  colleagueEmails?: string[];
+}
+
+/** Someone else on your domain whose calendar an event type can also check. */
+export interface Colleague {
+  email: string;
+  name: string;
+  picture?: string | null;
+  /** Only a connected calendar can be checked for availability. */
+  calendarConnected: boolean;
 }
 
 export interface Slot {

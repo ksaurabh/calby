@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import type { CommitmentType, EventType } from '../../types';
+import type { Colleague, CommitmentType, EventType } from '../../types';
 import { browserTimezone } from '../../utils/format';
 import { Button } from '../common';
 
 interface EventTypeFormProps {
   eventType?: EventType;
   commitmentTypes: CommitmentType[];
+  colleagues: Colleague[];
   onSubmit: (values: {
     name: string;
     externalName: string;
@@ -13,6 +14,7 @@ interface EventTypeFormProps {
     guidance: string;
     timezone: string;
     bookOverCommitmentTypeIds: string[];
+    colleagueEmails: string[];
   }) => Promise<void>;
   onCancel: () => void;
 }
@@ -26,12 +28,13 @@ const EXAMPLES = [
   'Half hour syncs, mornings, no Fridays, 15 minute gap between calls',
 ];
 
-export function EventTypeForm({ eventType, commitmentTypes, onSubmit, onCancel }: EventTypeFormProps) {
+export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit, onCancel }: EventTypeFormProps) {
   const [name, setName] = useState(eventType?.name || '');
   const [externalName, setExternalName] = useState(eventType?.externalName || '');
   const [description, setDescription] = useState(eventType?.description || '');
   const [guidance, setGuidance] = useState(eventType?.guidance || '');
   const [bookOver, setBookOver] = useState<string[]>(eventType?.bookOverCommitmentTypeIds || []);
+  const [withColleagues, setWithColleagues] = useState<string[]>(eventType?.colleagueEmails || []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -48,6 +51,7 @@ export function EventTypeForm({ eventType, commitmentTypes, onSubmit, onCancel }
         guidance: guidance.trim(),
         timezone: eventType?.rules.timezone || browserTimezone(),
         bookOverCommitmentTypeIds: bookOver,
+        colleagueEmails: withColleagues,
       });
     } catch (err) {
       setError((err as Error).message);
@@ -171,6 +175,60 @@ export function EventTypeForm({ eventType, commitmentTypes, onSubmit, onCancel }
               Time held by these commitments is still offered to people booking. Anything
               else on your calendar — including entries that haven't been classified —
               keeps blocking.
+            </p>
+          </>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Also check these colleagues{' '}
+          <span className="text-gray-400 font-normal">(optional)</span>
+        </label>
+        {colleagues.length === 0 ? (
+          <p className="text-xs text-gray-500">
+            Nobody else from your organisation has signed in to Calby yet.
+          </p>
+        ) : (
+          <>
+            <div className="space-y-1.5">
+              {colleagues.map(colleague => {
+                const checked = withColleagues.includes(colleague.email);
+                return (
+                  <label
+                    key={colleague.email}
+                    className={`flex items-start gap-2 ${
+                      colleague.calendarConnected ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={checked}
+                      disabled={!colleague.calendarConnected}
+                      onChange={() =>
+                        setWithColleagues(current =>
+                          checked
+                            ? current.filter(email => email !== colleague.email)
+                            : [...current, colleague.email]
+                        )
+                      }
+                    />
+                    <span className="min-w-0">
+                      <span className="text-sm text-gray-900">{colleague.name}</span>
+                      <span className="block text-xs text-gray-500">
+                        {colleague.email}
+                        {!colleague.calendarConnected && ' — hasn\u2019t connected a calendar yet'}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              A time is only offered when everyone ticked here is free as well. Calby
+              reads their free/busy times only — never the titles of their meetings —
+              and only for colleagues who connected their own calendar.
             </p>
           </>
         )}

@@ -2,6 +2,7 @@ import type {
   Booking,
   CalendarEvent,
   CalendarStatus,
+  Colleague,
   ChatMessage,
   CommitmentType,
   CommitmentTypeInput,
@@ -133,6 +134,9 @@ export const api = {
     request<{ success: boolean }>(`/api/commitment-types/${id}`, { method: 'DELETE' }),
 
   // Event types
+  // Colleagues on your domain, for checking their availability too
+  listColleagues: () => request<{ colleagues: Colleague[] }>('/api/colleagues'),
+
   listEventTypes: () => request<{ eventTypes: EventType[] }>('/api/event-types'),
 
   createEventType: (data: EventTypeInput) =>

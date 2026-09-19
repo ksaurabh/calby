@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CalendarStatus, CommitmentType, EventType } from '../../types';
+import type { CalendarStatus, Colleague, CommitmentType, EventType } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, Modal } from '../common';
@@ -38,6 +38,7 @@ export function EventTypesPage() {
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
+  const [colleagues, setColleagues] = useState<Colleague[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<EventType | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -47,14 +48,16 @@ export function EventTypesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [{ eventTypes }, status, commitments] = await Promise.all([
+      const [{ eventTypes }, status, commitments, team] = await Promise.all([
         api.listEventTypes(),
         api.calendarStatus(),
         api.listCommitmentTypes(),
+        api.listColleagues(),
       ]);
       setEventTypes(eventTypes);
       setCalendar(status);
       setCommitmentTypes(commitments.commitmentTypes);
+      setColleagues(team.colleagues);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -105,6 +108,7 @@ export function EventTypesPage() {
     guidance: string;
     timezone: string;
     bookOverCommitmentTypeIds: string[];
+    colleagueEmails: string[];
   }) => {
     if (editing) {
       await api.updateEventType(editing.id, values);
@@ -230,6 +234,19 @@ export function EventTypesPage() {
                       })}
                     </p>
                   )}
+                  {eventType.colleagueEmails?.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-gray-700">Also has to be free:</span>
+                      {eventType.colleagueEmails.map(email => (
+                        <span
+                          key={email}
+                          className="inline-flex items-center px-2 py-0.5 rounded-full border border-gray-300 bg-gray-50"
+                        >
+                          {colleagues.find(c => c.email === email)?.name || email}
+                        </span>
+                      ))}
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-2 shrink-0">
                   <Button variant="ghost" onClick={() => navigate(`/preview/${eventType.id}`)}>
@@ -272,6 +289,7 @@ export function EventTypesPage() {
         <EventTypeForm
           eventType={editing || undefined}
           commitmentTypes={commitmentTypes}
+          colleagues={colleagues}
           onSubmit={handleSubmit}
           onCancel={closeForm}
         />

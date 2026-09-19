@@ -307,6 +307,7 @@ export function generateSlots({
   commitmentTypes = [],
   bookOver = [],
   drops = [],
+  colleagues = [],
 } = {}) {
   const { horizonWeeks, timezone, startMinute, endMinute, slotIntervalMinutes } = rules;
   const durationMinutes = durationOverride || rules.durationMinutes;
@@ -335,6 +336,7 @@ export function generateSlots({
         bookOver,
         takenStarts,
         drops,
+        colleagues,
         offeredThatDay,
         now,
       });
@@ -410,6 +412,7 @@ export function diagnoseSlot({
   bookOver = [],
   takenStarts = [],
   drops = [],
+  colleagues = [],
   offeredThatDay = 0,
   now = new Date(),
 }) {
@@ -508,6 +511,22 @@ export function diagnoseSlot({
       code: 'busy',
       detail: 'Your calendar reports you as busy then, though no event title was available.',
     });
+  }
+
+  // Colleagues this event type also books for. Only free/busy is read — never
+  // their event titles — so a conflict can say who, but never what.
+  for (const colleague of colleagues) {
+    const who = colleague.name || colleague.email;
+    if (colleague.error) {
+      reasons.push({
+        code: 'colleague-unreadable',
+        detail: `${who}'s calendar could not be read (${colleague.error}), so their free time is unknown.`,
+      });
+      continue;
+    }
+    if ((colleague.busy || []).some(b => overlaps(guardStart, guardEnd, b.start, b.end))) {
+      reasons.push({ code: 'colleague-busy', detail: `${who} is busy then.` });
+    }
   }
 
   const dropped = drops.find(d => new Date(d.start).getTime() === startDate.getTime());

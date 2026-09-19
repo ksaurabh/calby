@@ -116,5 +116,33 @@ check('a taken slot is closed and says why',
 check('the conflicting slot names the meeting',
   result.diagnoses.get('2026-01-12T15:00:00.000Z')?.reasons.some(r => r.detail.includes('Acme')));
 
+// --- a colleague's busy time closes the slot, and says whose ---
+// Only their free/busy is known, so the reason names the person, never a title.
+const withColleague = generateSlots({
+  rules,
+  busy: [],
+  now,
+  colleagues: [
+    { email: 'sam@example.com', name: 'Sam', busy: [{ start: new Date('2026-01-12T14:00:00Z'), end: new Date('2026-01-12T14:30:00Z') }] },
+  ],
+});
+const colleagueSlots = withColleague.days.find(d => d.date === '2026-01-12')?.slots.map(s => s.start) || [];
+check('a colleague being busy removes the slot',
+  !colleagueSlots.includes('2026-01-12T14:00:00.000Z'), colleagueSlots.join(', '));
+check('the closed slot names the colleague',
+  withColleague.diagnoses.get('2026-01-12T14:00:00.000Z')?.reasons.some(
+    r => r.code === 'colleague-busy' && r.detail.includes('Sam')
+  ));
+
+// A colleague whose calendar can't be read blocks rather than silently letting
+// someone book over them.
+const unreadable = generateSlots({
+  rules,
+  busy: [],
+  now,
+  colleagues: [{ email: 'sam@example.com', name: 'Sam', busy: [], error: 'token expired' }],
+});
+check('an unreadable colleague calendar offers nothing', unreadable.days.length === 0, unreadable.days.length);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
