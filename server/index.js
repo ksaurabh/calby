@@ -2450,10 +2450,100 @@ app.post('/api/chat/sessions', requireAuth, (req, res) => {
   res.json(session);
 });
 
+// Assistant messages keep every generated version, each with the exact trace of
+// the model call that produced it. `content` mirrors the selected version, and
+// is what later turns see as history.
+function versionsOf(message) {
+  if (Array.isArray(message.versions) && message.versions.length) return message.versions;
+  return [{ content: message.content, at: message.at, trace: null }];
+}
+
+// What the client gets: traces stay on the server until asked for — they hold
+// the whole prompt, calendar included, and would bloat every session load.
+function publicSession(session) {
+  return {
+    ...session,
+    messages: session.messages.map(m => {
+      if (m.role !== 'assistant') return m;
+      const versions = versionsOf(m);
+      return {
+        role: m.role,
+        content: m.content,
+        at: m.at,
+        version: m.version ?? versions.length - 1,
+        versions: versions.map(v => ({ content: v.content, at: v.at, hasTrace: !!v.trace })),
+      };
+    }),
+  };
+}
+
+// One subject for the whole conversation, fixed by its first message, so the
+// "email" the model sees is consistent across turns and regenerations.
+function chatSubject(session, content) {
+  return session.subject || content.replace(/\s+/g, ' ').slice(0, 80);
+}
+
+function chatSetup(req, res, session) {
+  const assistant = assistantsForUser(req.user.email).find(a => a.id === session.assistantId);
+  if (!assistant) {
+    res.status(409).json({ error: 'This chat\'s virtual assistant no longer exists. Start a new chat.' });
+    return null;
+  }
+  const keyInfo = anthropicKeyFor(req.user.email);
+  if (!keyInfo.key) {
+    res.status(501).json({
+      error: 'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.',
+    });
+    return null;
+  }
+  return { assistant, keyInfo };
+}
+
+// Generate the assistant's answer to `content`, given the turns before it.
+async function chatReply(req, { assistant, keyInfo, session, history, content }) {
+  let senderContext = null;
+  try {
+    senderContext = await assistantSenderContext(req.user.email);
+  } catch (err) {
+    console.error(`[chat] context for ${req.user.email} failed:`, err.message);
+  }
+  const user = findUser(req.user.email);
+  return writeReply({
+    assistant,
+    sender: { email: req.user.email.toLowerCase(), name: user?.name || req.user.name || '' },
+    subject: chatSubject(session, content),
+    body: content,
+    history,
+    senderContext,
+    keyInfo,
+    feature: 'assistant-chat',
+  });
+}
+
+// Read-modify-write one session; returns the updated session or null.
+function updateChatSession(id, update) {
+  const all = getChatSessions();
+  const index = all.findIndex(s => s.id === id);
+  if (index < 0) return null;
+  all[index] = update(all[index]);
+  saveChatSessions(all);
+  return all[index];
+}
+
+// The assistant message at :index, and the user message it answers.
+function assistantTurn(session, rawIndex) {
+  const index = Number(rawIndex);
+  const message = session.messages[index];
+  if (!Number.isInteger(index) || message?.role !== 'assistant') return null;
+  const prompt = session.messages[index - 1];
+  if (prompt?.role !== 'user') return null;
+  return { index, message, prompt };
+}
+
 app.get('/api/chat/sessions/:id', requireAuth, (req, res) => {
   const session = findOwnSession(req);
   if (!session) return res.status(404).json({ error: 'Chat not found' });
-  res.json(session);
+  res.json(publicSession(session));
 });
 
 app.delete('/api/chat/sessions/:id', requireAuth, (req, res) => {
@@ -2470,58 +2560,106 @@ app.post('/api/chat/sessions/:id/messages', requireAuth, async (req, res) => {
 
   const session = findOwnSession(req);
   if (!session) return res.status(404).json({ error: 'Chat not found' });
-  const assistant = assistantsForUser(req.user.email).find(a => a.id === session.assistantId);
-  if (!assistant) {
-    return res.status(409).json({ error: 'This chat\'s virtual assistant no longer exists. Start a new chat.' });
-  }
-
-  const keyInfo = anthropicKeyFor(req.user.email);
-  if (!keyInfo.key) {
-    return res.status(501).json({
-      error: 'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.',
-    });
-  }
+  const setup = chatSetup(req, res, session);
+  if (!setup) return;
 
   try {
-    let senderContext = null;
-    try {
-      senderContext = await assistantSenderContext(req.user.email);
-    } catch (err) {
-      console.error(`[chat] context for ${req.user.email} failed:`, err.message);
-    }
-    const user = findUser(req.user.email);
-    const reply = await writeReply({
-      assistant,
-      sender: { email: req.user.email.toLowerCase(), name: user?.name || req.user.name || '' },
-      subject: session.title === 'New chat' ? content.slice(0, 80) : session.title,
-      body: content,
-      history: session.messages,
-      senderContext,
-      keyInfo,
-      feature: 'assistant-chat',
-    });
-
-    // Re-read before writing: another tab may have touched the sessions file.
-    const all = getChatSessions();
-    const index = all.findIndex(s => s.id === session.id);
-    if (index < 0) return res.status(404).json({ error: 'Chat was deleted' });
-    const now = new Date().toISOString();
-    all[index] = {
-      ...all[index],
-      title: all[index].title === 'New chat' ? content.replace(/\s+/g, ' ').slice(0, 60) : all[index].title,
+    const sentAt = new Date().toISOString();
+    const { text, trace } = await chatReply(req, { ...setup, session, history: session.messages, content });
+    const updated = updateChatSession(session.id, current => ({
+      ...current,
+      title: current.title === 'New chat' ? content.replace(/\s+/g, ' ').slice(0, 60) : current.title,
+      subject: chatSubject(current, content),
       messages: [
-        ...all[index].messages,
-        { role: 'user', content, at: now },
-        { role: 'assistant', content: reply, at: new Date().toISOString() },
+        ...current.messages,
+        { role: 'user', content, at: sentAt },
+        {
+          role: 'assistant',
+          content: text,
+          at: trace.at,
+          version: 0,
+          versions: [{ content: text, at: trace.at, trace }],
+        },
       ],
-      updatedAt: now,
-    };
-    saveChatSessions(all);
-    res.json(all[index]);
+      updatedAt: new Date().toISOString(),
+    }));
+    if (!updated) return res.status(404).json({ error: 'Chat was deleted' });
+    res.json(publicSession(updated));
   } catch (err) {
     console.error('[chat] reply failed:', err.message);
     res.status(err.status || 502).json({ error: err.message });
   }
+});
+
+// Generate a response again. The new version is added alongside the old ones
+// and selected; earlier versions stay available.
+app.post('/api/chat/sessions/:id/messages/:index/regenerate', requireAuth, async (req, res) => {
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  const turn = assistantTurn(session, req.params.index);
+  if (!turn) return res.status(400).json({ error: 'That is not an assistant response' });
+  const setup = chatSetup(req, res, session);
+  if (!setup) return;
+
+  try {
+    const { text, trace } = await chatReply(req, {
+      ...setup,
+      session,
+      history: session.messages.slice(0, turn.index - 1),
+      content: turn.prompt.content,
+    });
+    const updated = updateChatSession(session.id, current => {
+      const messages = [...current.messages];
+      const message = messages[turn.index];
+      if (message?.role !== 'assistant') return current;
+      const versions = [...versionsOf(message), { content: text, at: trace.at, trace }];
+      messages[turn.index] = { ...message, content: text, at: trace.at, version: versions.length - 1, versions };
+      return { ...current, messages, updatedAt: new Date().toISOString() };
+    });
+    if (!updated) return res.status(404).json({ error: 'Chat was deleted' });
+    res.json(publicSession(updated));
+  } catch (err) {
+    console.error('[chat] regenerate failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Pick which version of a response is current (and so what later turns see).
+app.put('/api/chat/sessions/:id/messages/:index/version', requireAuth, (req, res) => {
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  const turn = assistantTurn(session, req.params.index);
+  if (!turn) return res.status(400).json({ error: 'That is not an assistant response' });
+  const versions = versionsOf(turn.message);
+  const version = Number(req.body.version);
+  if (!Number.isInteger(version) || version < 0 || version >= versions.length) {
+    return res.status(400).json({ error: 'No such version' });
+  }
+  const updated = updateChatSession(session.id, current => {
+    const messages = [...current.messages];
+    messages[turn.index] = { ...messages[turn.index], content: versions[version].content, version };
+    return { ...current, messages };
+  });
+  res.json(publicSession(updated));
+});
+
+// Exactly what was sent to the model for one version of a response, and what
+// came back.
+app.get('/api/chat/sessions/:id/messages/:index/trace', requireAuth, (req, res) => {
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  const turn = assistantTurn(session, req.params.index);
+  if (!turn) return res.status(400).json({ error: 'That is not an assistant response' });
+  const versions = versionsOf(turn.message);
+  const version = req.query.version !== undefined
+    ? Number(req.query.version)
+    : turn.message.version ?? versions.length - 1;
+  const entry = versions[version];
+  if (!entry) return res.status(400).json({ error: 'No such version' });
+  if (!entry.trace) {
+    return res.status(404).json({ error: 'This response was generated before traces were recorded.' });
+  }
+  res.json({ version, ...entry.trace });
 });
 
 // ---------------------------------------------------------------------------

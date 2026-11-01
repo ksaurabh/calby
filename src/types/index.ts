@@ -50,10 +50,40 @@ export interface ChatAssistant {
   email: string;
 }
 
+export interface AssistantChatVersion {
+  content: string;
+  at: string;
+  hasTrace: boolean;
+}
+
 export interface AssistantChatMessage {
   role: 'user' | 'assistant';
   content: string;
   at: string;
+  /** Assistant responses only: every generated version, and which is shown. */
+  version?: number;
+  versions?: AssistantChatVersion[];
+}
+
+/** Exactly what was sent to the model for one response, and what came back. */
+export interface LlmTrace {
+  version: number;
+  at: string;
+  durationMs: number;
+  keySource: string | null;
+  request: {
+    model: string;
+    max_tokens: number;
+    system: { type: string; text: string; cache_control?: unknown }[];
+    messages: { role: string; content: unknown }[];
+  };
+  response: {
+    id: string;
+    model: string;
+    stop_reason: string | null;
+    usage: Record<string, unknown>;
+    content: unknown[];
+  };
 }
 
 export interface AssistantChatSummary {

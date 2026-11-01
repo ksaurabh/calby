@@ -4,6 +4,7 @@ import { api } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
 import { Button } from '../common';
+import { TraceModal } from './TraceModal';
 
 const fullName = (a: { firstName: string; lastName: string }) => `${a.firstName} ${a.lastName}`.trim();
 
@@ -18,6 +19,9 @@ export function ChatPage() {
   const [active, setActive] = useState<AssistantChatSession | null>(null);
   const [draft, setDraft] = useState('');
   const [pending, setPending] = useState<string | null>(null);
+  // Which response is regenerating, and which response/version's trace is open.
+  const [regenerating, setRegenerating] = useState<number | null>(null);
+  const [traceOf, setTraceOf] = useState<{ index: number; version: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -90,7 +94,7 @@ export function ChatPage() {
   const send = async (e?: React.FormEvent) => {
     e?.preventDefault();
     const text = draft.trim();
-    if (!text || pending || !active) return;
+    if (!text || pending || regenerating !== null || !active) return;
     setError(null);
     setPending(text);
     setDraft('');
@@ -105,6 +109,31 @@ export function ChatPage() {
       setDraft(text);
     } finally {
       setPending(null);
+    }
+  };
+
+  const regenerate = async (index: number) => {
+    if (!active || regenerating !== null || pending) return;
+    setError(null);
+    setRegenerating(index);
+    try {
+      const updated = await api.regenerateChatMessage(active.id, index);
+      setActive(updated);
+      upsertSummary(updated);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRegenerating(null);
+    }
+  };
+
+  const showVersion = async (index: number, version: number) => {
+    if (!active) return;
+    setError(null);
+    try {
+      setActive(await api.selectChatVersion(active.id, index, version));
+    } catch (err) {
+      setError((err as Error).message);
     }
   };
 
@@ -204,17 +233,69 @@ export function ChatPage() {
                     Say hello, or try "What's on my calendar tomorrow?"
                   </p>
                 )}
-                {active.messages.map((m, i) => (
-                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words ${
-                        m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-800'
-                      }`}
-                    >
-                      {m.content}
+                {active.messages.map((m, i) => {
+                  if (m.role === 'user') {
+                    return (
+                      <div key={i} className="flex justify-end">
+                        <div className="max-w-[80%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words bg-blue-600 text-white">
+                          {m.content}
+                        </div>
+                      </div>
+                    );
+                  }
+                  const versions = m.versions || [];
+                  const version = m.version ?? versions.length - 1;
+                  const busyHere = regenerating === i;
+                  return (
+                    <div key={i} className="flex flex-col items-start">
+                      <div
+                        className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm whitespace-pre-wrap break-words bg-gray-100 text-gray-800 ${
+                          busyHere ? 'opacity-50' : ''
+                        }`}
+                      >
+                        {m.content}
+                      </div>
+                      <div className="flex items-center gap-1 mt-1 text-xs text-gray-500">
+                        {versions.length > 1 && (
+                          <span className="flex items-center gap-1 mr-1">
+                            <button
+                              className="px-1 hover:text-gray-900 disabled:opacity-30"
+                              disabled={version <= 0 || busyHere}
+                              onClick={() => showVersion(i, version - 1)}
+                              aria-label="Previous version"
+                            >
+                              ‹
+                            </button>
+                            {version + 1}/{versions.length}
+                            <button
+                              className="px-1 hover:text-gray-900 disabled:opacity-30"
+                              disabled={version >= versions.length - 1 || busyHere}
+                              onClick={() => showVersion(i, version + 1)}
+                              aria-label="Next version"
+                            >
+                              ›
+                            </button>
+                          </span>
+                        )}
+                        <button
+                          className="px-2 py-0.5 rounded hover:bg-gray-100 hover:text-gray-900 disabled:opacity-40"
+                          disabled={regenerating !== null || !!pending}
+                          onClick={() => regenerate(i)}
+                        >
+                          {busyHere ? 'Regenerating…' : '↻ Regenerate'}
+                        </button>
+                        {versions[version]?.hasTrace && (
+                          <button
+                            className="px-2 py-0.5 rounded hover:bg-gray-100 hover:text-gray-900"
+                            onClick={() => setTraceOf({ index: i, version })}
+                          >
+                            Full trace
+                          </button>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {pending && (
                   <>
                     <div className="flex justify-end">
@@ -247,6 +328,15 @@ export function ChatPage() {
           )}
         </section>
       </div>
+
+      {traceOf && active && (
+        <TraceModal
+          sessionId={active.id}
+          index={traceOf.index}
+          version={traceOf.version}
+          onClose={() => setTraceOf(null)}
+        />
+      )}
     </div>
   );
 }

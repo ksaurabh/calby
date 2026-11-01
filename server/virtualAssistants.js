@@ -186,18 +186,42 @@ export async function writeReply({
       content: m.role === 'user' ? emailText({ sender, subject, body: m.content }) : m.content,
     }));
 
-  const response = await callClaude({
+  // Built once and kept: this exact object is what goes to the API, and is
+  // what the chat's "full trace" shows.
+  const request = {
     model: 'claude-opus-5',
     max_tokens: 4000,
     system,
     messages: [...earlier, { role: 'user', content: emailText({ sender, subject, date, body }) }],
-  }, { apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature });
+  };
 
-  return response.content
+  const startedAt = Date.now();
+  const response = await callClaude(request, {
+    apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature,
+  });
+
+  const text = response.content
     .filter(block => block.type === 'text')
     .map(block => block.text)
     .join('\n')
     .trim();
+
+  return {
+    text,
+    trace: {
+      at: new Date(startedAt).toISOString(),
+      durationMs: Date.now() - startedAt,
+      keySource: keyInfo.source || null,
+      request,
+      response: {
+        id: response.id,
+        model: response.model,
+        stop_reason: response.stop_reason,
+        usage: response.usage,
+        content: response.content,
+      },
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +327,7 @@ async function checkAssistantInner(assistantId, deps) {
       } catch (err) {
         console.error(`[va] context for ${sender.email} failed:`, err.message);
       }
-      const reply = await writeReply({
+      const { text: reply } = await writeReply({
         assistant,
         sender: { email: sender.email, name: sender.name || user.name || '' },
         subject: message.subject,

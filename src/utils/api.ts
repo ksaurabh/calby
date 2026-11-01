@@ -2,6 +2,7 @@ import type {
   AssistantChatSession,
   AssistantChatSummary,
   ChatAssistant,
+  LlmTrace,
   Note,
   Booking,
   CalendarEvent,
@@ -303,6 +304,20 @@ export const api = {
 
   deleteChatSession: (id: string) =>
     request<{ success: boolean }>(`/api/chat/sessions/${id}`, { method: 'DELETE' }),
+
+  regenerateChatMessage: (id: string, index: number) =>
+    request<AssistantChatSession>(`/api/chat/sessions/${id}/messages/${index}/regenerate`, {
+      method: 'POST',
+    }),
+
+  selectChatVersion: (id: string, index: number, version: number) =>
+    request<AssistantChatSession>(`/api/chat/sessions/${id}/messages/${index}/version`, {
+      method: 'PUT',
+      body: JSON.stringify({ version }),
+    }),
+
+  chatTrace: (id: string, index: number, version: number) =>
+    request<LlmTrace>(`/api/chat/sessions/${id}/messages/${index}/trace?version=${version}`),
 
   sendChatMessage: (id: string, content: string) =>
     request<AssistantChatSession>(`/api/chat/sessions/${id}/messages`, {
