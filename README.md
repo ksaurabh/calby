@@ -73,6 +73,20 @@ English, and share a booking link that writes real invites to your calendar.
   agent re-checks the calendar (the slot may have gone in the meantime), creates
   the event on the owner's primary calendar with the visitor as a guest, and
   Google emails the invitation to both.
+- **Virtual assistants.** On the Administration page an admin adds an assistant —
+  first name, last name, and a Google account's email — then clicks *Connect
+  Gmail* and signs in *as that account* (Calby checks it is the right one). The
+  server polls each connected inbox every minute (`VA_POLL_SECONDS`) and answers
+  new mail with a reply written by Claude, in the same thread. The assistant
+  sees the sender's own calendar and booking links, so "what's on Tuesday?" or
+  "send me three times for an intro call" work. It only answers Calby users on
+  the creator's domain whose mail passed SPF/DKIM/DMARC, skips auto-replies and
+  list mail, replies only to the sender (never to anyone else), and caps itself
+  at 30 replies an hour. Gmail access (`gmail.modify`) uses the calendar
+  redirect URI, so nothing new needs registering — but the scope must be added
+  to the OAuth consent screen, and an external-type app in testing mode needs
+  the assistant's account listed as a test user. The refresh token is
+  encrypted at rest like org API keys.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

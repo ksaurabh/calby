@@ -5,6 +5,7 @@ import { api } from '../../utils/api';
 import { formatDate } from '../../utils/format';
 import { ROLE_LABELS } from '../../utils/roles';
 import { Button } from '../common';
+import { VirtualAssistants } from './VirtualAssistants';
 
 const inputClass =
   'rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
@@ -239,6 +240,8 @@ export function AdminPage() {
           </tbody>
         </table>
       </section>
+
+      <VirtualAssistants />
     </div>
   );
 }

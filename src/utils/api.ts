@@ -17,6 +17,7 @@ import type {
   SchedulingRules,
   SlotDay,
   User,
+  VirtualAssistant,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
@@ -270,6 +271,28 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ role }),
     }),
+
+  // Virtual assistants
+  listVirtualAssistants: () =>
+    request<{ assistants: VirtualAssistant[] }>('/api/virtual-assistants'),
+
+  createVirtualAssistant: (data: { firstName: string; lastName: string; email: string }) =>
+    request<VirtualAssistant>('/api/virtual-assistants', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  deleteVirtualAssistant: (id: string) =>
+    request<{ success: boolean }>(`/api/virtual-assistants/${id}`, { method: 'DELETE' }),
+
+  disconnectVirtualAssistant: (id: string) =>
+    request<VirtualAssistant>(`/api/virtual-assistants/${id}/connect`, { method: 'DELETE' }),
+
+  checkVirtualAssistant: (id: string) =>
+    request<{
+      result: { checked?: number; replied?: number; error?: string; skipped?: string; limited?: boolean };
+      assistant: VirtualAssistant;
+    }>(`/api/virtual-assistants/${id}/check`, { method: 'POST' }),
 
   // Domains
   listDomains: () => request<{ domains: string[]; alwaysAllowed: string[] }>('/api/domains'),

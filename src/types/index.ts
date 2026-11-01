@@ -12,6 +12,29 @@ export interface User {
   lastLoginAt?: string | null;
 }
 
+export interface VirtualAssistantActivity {
+  at: string;
+  status: 'replied' | 'ignored' | 'error';
+  from?: string;
+  subject?: string;
+  detail?: string;
+}
+
+export interface VirtualAssistant {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  ownerDomain: string;
+  createdBy: string;
+  createdAt: string;
+  connected: boolean;
+  connectedAt: string | null;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  activity: VirtualAssistantActivity[];
+}
+
 export interface Org {
   id: string;
   name: string;

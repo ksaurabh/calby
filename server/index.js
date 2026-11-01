@@ -41,6 +41,15 @@ import {
 } from './classify.js';
 import { askCalendar, buildCalendarContext, explainEventMatch, explainSlot } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
+import { gmailConsentUrl, gmailProfile } from './gmail.js';
+import {
+  checkAssistant,
+  getAssistants,
+  publicAssistant,
+  saveAssistants,
+  startPolling,
+  tokenKey,
+} from './virtualAssistants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1101,6 +1110,11 @@ app.get('/api/calendar/connect', requireAuth, (req, res) => {
 
 app.get('/api/calendar/callback', async (req, res) => {
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5178';
+  // Virtual assistants' Gmail consent shares this redirect URI, so no extra one
+  // has to be registered with Google. The session state says which flow it is.
+  if (req.session.vaConnect && req.query.state === req.session.vaConnect.state) {
+    return virtualAssistantCallback(req, res);
+  }
   const fail = reason => res.redirect(`${clientUrl}/event-types?calendar=${reason}`);
 
   if (!req.user) return fail('signin_required');
@@ -2033,10 +2047,246 @@ app.get('/api/usage', requireAuth, (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Virtual assistants — a named Google account colleagues can email. The server
+// reads its inbox and replies (see virtualAssistants.js).
+// ---------------------------------------------------------------------------
+// Platform admins manage every assistant; an org admin manages those on their
+// org's domain.
+function canManageAssistant(req, assistant) {
+  return isActiveAdmin(req) || administeredDomains(req.user?.email).includes(assistant.ownerDomain);
+}
+
+function findManagedAssistant(req, res) {
+  const assistant = getAssistants().find(a => a.id === req.params.id);
+  if (!assistant || !canManageAssistant(req, assistant)) {
+    res.status(404).json({ error: 'Virtual assistant not found' });
+    return null;
+  }
+  return assistant;
+}
+
+// What the assistant may know about whoever emailed it: their own calendar
+// (titles included — it is their data, and they are the only recipient of the
+// reply) and their booking links with the next open times.
+async function assistantSenderContext(email) {
+  const calendar = calendarFor(email);
+  const timezone = ownerTimezone(email);
+  const sections = [];
+
+  const eventTypes = getEventTypes().filter(e => e.ownerEmail === email.toLowerCase() && e.active);
+  if (eventTypes.length) {
+    const lines = ['Their booking links (event types):'];
+    for (const eventType of eventTypes.slice(0, 5)) {
+      const durations = (eventType.rules.durationOptions?.length
+        ? eventType.rules.durationOptions
+        : [eventType.rules.durationMinutes]).join('/');
+      lines.push(`- "${externalNameOf(eventType)}" (internal name "${eventType.name}"), ${durations} min: ${PUBLIC_URL}/book/${eventType.slug}`);
+      if (!calendar?.refreshToken) continue;
+      try {
+        const { days } = await availabilityFor(eventType, { review: 'cached' });
+        const slots = days.flatMap(d => d.slots).slice(0, 12);
+        if (slots.length) {
+          const fmt = iso => new Date(iso).toLocaleString('en-US', {
+            timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+          });
+          lines.push(`  next open times (${timezone}): ${slots.map(s => fmt(s.start)).join('; ')}`);
+        }
+      } catch (err) {
+        lines.push(`  (open times unavailable: ${err.message})`);
+      }
+    }
+    sections.push(lines.join('\n'));
+  }
+
+  if (calendar?.refreshToken) {
+    const { from, to } = calendarWindow({});
+    const token = await accessTokenFor(email, calendar.refreshToken);
+    const events = await fetchEvents(token, from, to);
+    const commitmentTypes = getCommitmentTypes(email);
+    // Cached labels only — answering an email should not trigger a batch of
+    // classification calls.
+    const { assignments } = splitCached(events, commitmentTypes);
+    sections.push(buildCalendarContext({ events, timezone, commitmentTypes, assignments }));
+  } else {
+    sections.push('They have not connected a Google Calendar to Calby, so you cannot see their calendar.');
+  }
+  return sections.join('\n\n');
+}
+
+const assistantDeps = {
+  findUser,
+  anthropicKeyFor,
+  senderContext: assistantSenderContext,
+};
+
+app.get('/api/virtual-assistants', requireAuth, (req, res) => {
+  if (!canManageUsers(req)) return res.status(403).json({ error: 'Admin access required' });
+  const assistants = getAssistants()
+    .filter(a => canManageAssistant(req, a))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map(publicAssistant);
+  res.json({ assistants });
+});
+
+app.post('/api/virtual-assistants', requireAuth, (req, res) => {
+  if (!canManageUsers(req)) return res.status(403).json({ error: 'Admin access required' });
+
+  const firstName = req.body.firstName?.trim();
+  const lastName = req.body.lastName?.trim() || '';
+  const email = req.body.email?.toLowerCase().trim();
+  if (!firstName) return res.status(400).json({ error: 'A first name is required' });
+  if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'A valid email is required' });
+
+  const all = getAssistants();
+  if (all.some(a => a.email === email)) {
+    return res.status(400).json({ error: 'There is already a virtual assistant with that email' });
+  }
+
+  // The assistant answers people on the creator's org domain: an org admin's
+  // own org, or a platform admin's own domain.
+  const ownerDomain = isActiveAdmin(req)
+    ? req.user.email.split('@')[1].toLowerCase()
+    : administeredDomains(req.user.email)[0];
+
+  const assistant = {
+    id: generateId('va'),
+    firstName,
+    lastName,
+    email,
+    ownerDomain,
+    createdBy: req.user.email.toLowerCase(),
+    createdAt: new Date().toISOString(),
+    gmail: null,
+    lastCheckedAt: null,
+    lastError: null,
+    activity: [],
+    handledIds: [],
+  };
+  saveAssistants([...all, assistant]);
+  res.json(publicAssistant(assistant));
+});
+
+app.put('/api/virtual-assistants/:id', requireAuth, (req, res) => {
+  const assistant = findManagedAssistant(req, res);
+  if (!assistant) return;
+  const all = getAssistants();
+  const index = all.findIndex(a => a.id === assistant.id);
+  all[index] = {
+    ...all[index],
+    firstName: req.body.firstName?.trim() || all[index].firstName,
+    lastName: req.body.lastName !== undefined ? String(req.body.lastName).trim() : all[index].lastName,
+  };
+  saveAssistants(all);
+  res.json(publicAssistant(all[index]));
+});
+
+app.delete('/api/virtual-assistants/:id', requireAuth, (req, res) => {
+  const assistant = findManagedAssistant(req, res);
+  if (!assistant) return;
+  saveAssistants(getAssistants().filter(a => a.id !== assistant.id));
+  forgetAccessToken(tokenKey(assistant));
+  res.json({ success: true });
+});
+
+// Start Google's consent screen for the assistant's own account. The admin must
+// sign in there as the assistant; the callback checks that they did.
+app.get('/api/virtual-assistants/:id/connect', requireAuth, (req, res) => {
+  const assistant = findManagedAssistant(req, res);
+  if (!assistant) return;
+  if (!process.env.GOOGLE_CLIENT_ID) {
+    return res.status(500).json({ error: 'GOOGLE_CLIENT_ID is not configured' });
+  }
+  if (!canSealSecrets()) {
+    return res.status(500).json({ error: 'Set SESSION_SECRET on the server before connecting a mailbox.' });
+  }
+  const state = generateState();
+  req.session.vaConnect = { state, assistantId: assistant.id };
+  req.session.save(err => {
+    if (err) return res.status(500).json({ error: 'Could not start the Gmail connection' });
+    res.redirect(gmailConsentUrl(state, assistant.email));
+  });
+});
+
+async function virtualAssistantCallback(req, res) {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:5178';
+  const done = (status, detail) => {
+    const params = new URLSearchParams({ va: status });
+    if (detail) params.set('detail', detail);
+    res.redirect(`${clientUrl}/admin?${params}`);
+  };
+
+  const { assistantId } = req.session.vaConnect;
+  delete req.session.vaConnect;
+  if (!req.user) return done('failed', 'Sign in to Calby first.');
+  if (!req.query.code) return done('failed', req.query.error || 'Google did not return a code.');
+
+  const assistant = getAssistants().find(a => a.id === assistantId);
+  if (!assistant || !canManageAssistant(req, assistant)) return done('failed', 'Virtual assistant not found.');
+
+  try {
+    const tokens = await exchangeCode(req.query.code);
+    const granted = (tokens.scope || '').split(' ');
+    if (!granted.some(s => s.includes('gmail.modify'))) {
+      return done('failed', 'Gmail access was not granted. Tick the Gmail permission on the consent screen.');
+    }
+    // Make sure the admin consented as the assistant, not as themselves.
+    const { email } = await gmailProfile(tokens.access_token);
+    if (email !== assistant.email) {
+      return done('failed', `You signed in as ${email}, but this assistant is ${assistant.email}.`);
+    }
+
+    const all = getAssistants();
+    const index = all.findIndex(a => a.id === assistantId);
+    all[index] = {
+      ...all[index],
+      gmail: {
+        refreshToken: encryptSecret(tokens.refresh_token),
+        scopes: granted,
+        connectedAt: new Date().toISOString(),
+        connectedBy: req.user.email.toLowerCase(),
+      },
+      lastError: null,
+    };
+    saveAssistants(all);
+    forgetAccessToken(tokenKey(assistant));
+    done('connected');
+  } catch (err) {
+    console.error('[va] connect failed:', err.message);
+    done('failed', err.message);
+  }
+}
+
+app.delete('/api/virtual-assistants/:id/connect', requireAuth, (req, res) => {
+  const assistant = findManagedAssistant(req, res);
+  if (!assistant) return;
+  const all = getAssistants();
+  const index = all.findIndex(a => a.id === assistant.id);
+  all[index] = { ...all[index], gmail: null };
+  saveAssistants(all);
+  forgetAccessToken(tokenKey(assistant));
+  res.json(publicAssistant(all[index]));
+});
+
+// Check the inbox now rather than waiting for the next poll.
+app.post('/api/virtual-assistants/:id/check', requireAuth, async (req, res) => {
+  const assistant = findManagedAssistant(req, res);
+  if (!assistant) return;
+  if (!assistant.gmail?.refreshToken) return res.status(409).json({ error: 'Connect Gmail first.' });
+  try {
+    const result = await checkAssistant(assistant.id, assistantDeps);
+    const fresh = getAssistants().find(a => a.id === assistant.id);
+    res.json({ result, assistant: publicAssistant(fresh) });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
   console.log(`Calby server running on port ${PORT}`);
+  startPolling(assistantDeps);
 });
