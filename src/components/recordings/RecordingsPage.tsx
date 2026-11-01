@@ -104,9 +104,8 @@ function RecordingsTable({ label, source, data, timezone }: {
           </h2>
           <p className="text-xs text-gray-500">
             {!source.connected
-              ? `Not connected — an org admin can connect ${label} on the Organizations page.`
-              : `${data.scope === 'org' ? 'Everyone at your org' : 'Meetings you were in'}, last ${data.days} days` +
-                (source.source === 'server' ? ' · using the server-wide key' : '')}
+              ? `Not connected — add your ${label} API key in Settings.`
+              : `${data.scope === 'all' ? `Everything your ${label} key can see` : 'Meetings you were in'}, last ${data.days} days`}
           </p>
         </div>
         <span className="text-gray-400 text-sm">{open ? '▾' : '▸'}</span>
@@ -158,7 +157,7 @@ function RecordingsTable({ label, source, data, timezone }: {
  */
 export function RecordingsPage() {
   const [days, setDays] = useState(7);
-  const [scope, setScope] = useState<'me' | 'org'>('me');
+  const [scope, setScope] = useState<'me' | 'all'>('me');
   const [data, setData] = useState<Data | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -219,18 +218,16 @@ export function RecordingsPage() {
           >
             {[7, 14, 30].map(d => <option key={d} value={d}>Last {d} days</option>)}
           </select>
-          {data?.canSeeOrg && (
-            <select
-              className="rounded-lg border border-gray-300 px-2 py-2 text-sm"
-              value={scope}
-              onChange={e => setScope(e.target.value as 'me' | 'org')}
-              disabled={loading}
-              title="Which Avoma and Gong recordings to list"
-            >
-              <option value="me">Recordings I was in</option>
-              <option value="org">Everyone at my org</option>
-            </select>
-          )}
+          <select
+            className="rounded-lg border border-gray-300 px-2 py-2 text-sm"
+            value={scope}
+            onChange={e => setScope(e.target.value as 'me' | 'all')}
+            disabled={loading}
+            title="Which Avoma and Gong recordings to list"
+          >
+            <option value="me">Recordings I was in</option>
+            <option value="all">Everything my keys can see</option>
+          </select>
           <Button variant="secondary" onClick={() => load(true)} disabled={loading}>Refresh</Button>
         </div>
       </div>
@@ -252,9 +249,8 @@ export function RecordingsPage() {
 
       {nothingConnected && (
         <div className="rounded-lg bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-          Neither Avoma nor Gong is connected for your organization yet.{' '}
-          <button className="underline" onClick={() => navigate('/orgs')}>Connect them on the Organizations page</button>
-          {' '}(org admins), or set AVOMA_API_KEY / GONG_API_ACCESS_KEY + GONG_API_SECRET_KEY on the server.
+          You haven't connected Avoma or Gong yet.{' '}
+          <button className="underline" onClick={() => navigate('/settings')}>Add your API keys in Settings</button>.
         </div>
       )}
 

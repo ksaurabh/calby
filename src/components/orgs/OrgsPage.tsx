@@ -5,7 +5,6 @@ import type { Org } from '../../types';
 import { formatDate } from '../../utils/format';
 import { Button, Modal } from '../common';
 import { OrgApiKey } from './OrgApiKey';
-import { OrgIntegrations } from './OrgIntegrations';
 import { OrgForm } from './OrgForm';
 
 export function OrgsPage() {
@@ -139,7 +138,6 @@ export function OrgsPage() {
                         onSave={apiKey => setAnthropicKey(org.id, apiKey)}
                         onRemove={() => removeAnthropicKey(org.id)}
                       />
-                      <OrgIntegrations org={org} onChanged={fetchOrgs} />
                     </td>
                   </tr>
                 )}

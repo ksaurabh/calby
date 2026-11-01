@@ -99,17 +99,16 @@ English, and share a booking link that writes real invites to your calendar.
   days a request needs, so unrelated requests carry no calendar at all. Every
   response can be regenerated, and its *Full trace* shows each model call in
   the loop exactly as sent, with tool calls, tool results and cost.
-- **Recordings (Avoma and Gong).** An org admin connects the org's Avoma API
-  key and Gong access key + secret on the Organizations page (each verified
-  with the service, stored encrypted; `AVOMA_API_KEY` / `GONG_API_ACCESS_KEY` +
-  `GONG_API_SECRET_KEY` in `.env` are the server-wide fallback). The
+- **Recordings (Avoma and Gong).** Each user connects their own Avoma API key
+  and Gong access key + secret in Settings (each verified with the service,
+  stored encrypted on their user record, never sent back to a browser). The
   *Recordings* page lists the last 7/14/30 days of Avoma meetings and Gong calls
-  with their attendees — the ones you were in, or the whole org for admins — and
-  the meetings on your calendar that had other attendees but no recording. A
+  with their attendees — the ones you were in, or everything your keys can see —
+  and the meetings on your calendar that had other attendees but no recording. A
   meeting counts as recorded when an Avoma or Gong recording starts within 10
   minutes of it and shares an attendee other than you (by email, or full name
-  when the recording has none). Avoma/Gong pulls are kept for 5 minutes, since
-  both rate-limit; the clients retry 429s honouring the wait they ask for.
+  when the recording has none). Pulls are kept for 5 minutes per user, since
+  both services rate-limit; the clients retry 429s honouring the wait asked for.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

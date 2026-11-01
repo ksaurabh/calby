@@ -344,45 +344,37 @@ function anthropicKeyFor(email) {
 // Orgs go to the client without the sealed key — only whether one is set, and a
 // masked hint so an admin can recognise which key it is.
 function publicOrg(org) {
-  const { anthropicKey, anthropicKeyHint, avoma, gong, ...rest } = org;
+  const { anthropicKey, anthropicKeyHint, ...rest } = org;
   return {
     ...rest,
     hasAnthropicKey: !!anthropicKey,
     anthropicKeyHint: anthropicKey ? anthropicKeyHint || '••••' : null,
-    // Recording integrations: whether connected, and a hint — never the keys.
-    avoma: avoma?.apiKey
-      ? { connected: true, hint: avoma.hint || '••••', setBy: avoma.setBy || null, setAt: avoma.setAt || null }
-      : { connected: false },
-    gong: gong?.accessKey
-      ? { connected: true, hint: gong.hint || '••••', setBy: gong.setBy || null, setAt: gong.setAt || null }
-      : { connected: false },
   };
 }
 
-// Avoma and Gong credentials for a user: their organization's (matched on
-// email domain), else the server-wide ones from .env. Like the Anthropic key,
-// they're sealed at rest and never sent to a browser.
+// Avoma and Gong credentials are personal: each user connects their own on
+// the Settings page. Sealed at rest, never sent to a browser.
 function recordingCredsFor(email) {
-  const domain = email?.split('@')[1]?.toLowerCase();
-  const org = domain ? getOrgs().find(o => o.domain === domain) : null;
-
+  const user = findUser(email);
   let avoma = null;
-  if (org?.avoma?.apiKey) {
-    const apiKey = decryptSecret(org.avoma.apiKey);
-    if (apiKey) avoma = { apiKey, source: 'org' };
+  if (user?.avoma?.apiKey) {
+    const apiKey = decryptSecret(user.avoma.apiKey);
+    if (apiKey) avoma = { apiKey };
   }
-  if (!avoma && process.env.AVOMA_API_KEY) avoma = { apiKey: process.env.AVOMA_API_KEY, source: 'server' };
-
   let gong = null;
-  if (org?.gong?.accessKey) {
-    const accessKey = decryptSecret(org.gong.accessKey);
-    const secretKey = decryptSecret(org.gong.secretKey);
-    if (accessKey && secretKey) gong = { accessKey, secretKey, source: 'org' };
+  if (user?.gong?.accessKey) {
+    const accessKey = decryptSecret(user.gong.accessKey);
+    const secretKey = decryptSecret(user.gong.secretKey);
+    if (accessKey && secretKey) gong = { accessKey, secretKey };
   }
-  if (!gong && process.env.GONG_API_ACCESS_KEY && process.env.GONG_API_SECRET_KEY) {
-    gong = { accessKey: process.env.GONG_API_ACCESS_KEY, secretKey: process.env.GONG_API_SECRET_KEY, source: 'server' };
-  }
-  return { avoma, gong, domain };
+  return { avoma, gong };
+}
+
+// What Settings shows about a connection: whether it's there, and a hint.
+function integrationStatus(entry) {
+  return entry?.apiKey || entry?.accessKey
+    ? { connected: true, hint: entry.hint || '••••', setAt: entry.setAt || null }
+    : { connected: false };
 }
 
 // A URL-safe slug derived from the org name, e.g. "Acme Corp." -> "acme-corp".
@@ -1128,98 +1120,6 @@ app.delete('/api/orgs/:id/anthropic-key', requireAuth, (req, res) => {
   res.json(publicOrg(orgs[index]));
 });
 
-// Recording integrations. An org admin connects the org's Avoma and Gong
-// accounts; each key is checked against the service before it is stored.
-function findManagedOrg(req, res, what) {
-  const orgs = getOrgs();
-  const index = orgs.findIndex(o => o.id === req.params.id);
-  if (index < 0) {
-    res.status(404).json({ error: 'Organization not found' });
-    return null;
-  }
-  if (!canManageOrg(req, orgs[index])) {
-    res.status(403).json({ error: `Only this organization's admin can change its ${what}` });
-    return null;
-  }
-  if (!orgs[index].domain) {
-    res.status(400).json({ error: 'Give this organization an email domain first — the connection is shared with everyone on that domain.' });
-    return null;
-  }
-  if (!canSealSecrets()) {
-    res.status(500).json({ error: 'Set SESSION_SECRET on the server before storing keys.' });
-    return null;
-  }
-  return { orgs, index };
-}
-
-app.put('/api/orgs/:id/avoma', requireAuth, async (req, res) => {
-  const found = findManagedOrg(req, res, 'Avoma connection');
-  if (!found) return;
-  const apiKey = req.body.apiKey?.trim();
-  if (!apiKey) return res.status(400).json({ error: 'Paste an Avoma API key' });
-  try {
-    await avomaProbe(apiKey);
-  } catch (err) {
-    return res.status(400).json({
-      error: err.badKey ? 'Avoma rejected that key. Check it and try again.' : `Could not verify the key — ${err.message}`,
-    });
-  }
-  const { orgs, index } = found;
-  orgs[index] = {
-    ...orgs[index],
-    avoma: { apiKey: encryptSecret(apiKey), hint: maskSecret(apiKey), setBy: req.user.email, setAt: new Date().toISOString() },
-    updatedAt: new Date().toISOString(),
-  };
-  saveOrgs(orgs);
-  recordingsCache.clear();
-  res.json(publicOrg(orgs[index]));
-});
-
-app.put('/api/orgs/:id/gong', requireAuth, async (req, res) => {
-  const found = findManagedOrg(req, res, 'Gong connection');
-  if (!found) return;
-  const accessKey = req.body.accessKey?.trim();
-  const secretKey = req.body.secretKey?.trim();
-  if (!accessKey || !secretKey) return res.status(400).json({ error: 'Paste both the Gong access key and the secret' });
-  try {
-    await gongProbe(accessKey, secretKey);
-  } catch (err) {
-    return res.status(400).json({
-      error: err.badKey ? 'Gong rejected that access key and secret. Check them and try again.' : `Could not verify the keys — ${err.message}`,
-    });
-  }
-  const { orgs, index } = found;
-  orgs[index] = {
-    ...orgs[index],
-    gong: {
-      accessKey: encryptSecret(accessKey),
-      secretKey: encryptSecret(secretKey),
-      hint: maskSecret(accessKey),
-      setBy: req.user.email,
-      setAt: new Date().toISOString(),
-    },
-    updatedAt: new Date().toISOString(),
-  };
-  saveOrgs(orgs);
-  recordingsCache.clear();
-  res.json(publicOrg(orgs[index]));
-});
-
-for (const service of ['avoma', 'gong']) {
-  app.delete(`/api/orgs/:id/${service}`, requireAuth, (req, res) => {
-    const orgs = getOrgs();
-    const index = orgs.findIndex(o => o.id === req.params.id);
-    if (index < 0) return res.status(404).json({ error: 'Organization not found' });
-    if (!canManageOrg(req, orgs[index])) {
-      return res.status(403).json({ error: 'Only this organization\'s admin can change its connections' });
-    }
-    orgs[index] = { ...orgs[index], [service]: null, updatedAt: new Date().toISOString() };
-    saveOrgs(orgs);
-    recordingsCache.clear();
-    res.json(publicOrg(orgs[index]));
-  });
-}
-
 app.delete('/api/orgs/:id', requireAuth, (req, res) => {
   const orgs = getOrgs();
   const org = orgs.find(o => o.id === req.params.id);
@@ -1242,7 +1142,12 @@ app.get('/api/users', requireAuth, (req, res) => {
   const domains = administeredDomains(req.user.email);
   const users = getUsers()
     .filter(u => isActiveAdmin(req) || domains.includes(u.domain))
-    .map(u => ({ ...u, role: effectiveRole(u.email) }));
+    // Stored credentials (calendar token, Avoma/Gong keys) never leave the server.
+    .map(({ calendar, avoma, gong, ...u }) => ({
+      ...u,
+      role: effectiveRole(u.email),
+      calendarConnected: !!calendar?.refreshToken,
+    }));
   res.json({ users, scopedToDomains: isActiveAdmin(req) ? null : domains });
 });
 
@@ -3218,13 +3123,88 @@ function callCost(call) {
 // people in them but no recording in either.
 // ---------------------------------------------------------------------------
 // Both services rate-limit, and a window's recordings barely change minute to
-// minute, so each org's pull is kept briefly. Refresh bypasses it.
+// minute, so each user's pull is kept briefly. Refresh bypasses it.
 const recordingsCache = new Map();
 const RECORDINGS_TTL = 5 * 60 * 1000;
 
+function forgetRecordings(email) {
+  for (const key of recordingsCache.keys()) {
+    if (key.startsWith(`${email.toLowerCase()}:`)) recordingsCache.delete(key);
+  }
+}
+
+function saveUserIntegration(email, service, value) {
+  const users = getUsers();
+  const index = users.findIndex(u => u.email === email.toLowerCase());
+  if (index < 0) return false;
+  users[index] = { ...users[index], [service]: value };
+  saveUsers(users);
+  forgetRecordings(email);
+  return true;
+}
+
+// Only the tail: unlike Anthropic keys these have no fixed prefix, so the
+// leading characters would be part of the secret itself.
+const lastFour = key => `…${key.slice(-4)}`;
+
+function userIntegrations(email) {
+  const user = findUser(email);
+  return { avoma: integrationStatus(user?.avoma), gong: integrationStatus(user?.gong) };
+}
+
+app.get('/api/settings/integrations', requireAuth, (req, res) => {
+  res.json(userIntegrations(req.user.email));
+});
+
+// Each key is checked against the service before it's stored.
+app.put('/api/settings/avoma', requireAuth, async (req, res) => {
+  if (!canSealSecrets()) return res.status(500).json({ error: 'Set SESSION_SECRET on the server before storing keys.' });
+  const apiKey = req.body.apiKey?.trim();
+  if (!apiKey) return res.status(400).json({ error: 'Paste an Avoma API key' });
+  try {
+    await avomaProbe(apiKey);
+  } catch (err) {
+    return res.status(400).json({
+      error: err.badKey ? 'Avoma rejected that key. Check it and try again.' : `Could not verify the key — ${err.message}`,
+    });
+  }
+  saveUserIntegration(req.user.email, 'avoma', {
+    apiKey: encryptSecret(apiKey), hint: lastFour(apiKey), setAt: new Date().toISOString(),
+  });
+  res.json(userIntegrations(req.user.email));
+});
+
+app.put('/api/settings/gong', requireAuth, async (req, res) => {
+  if (!canSealSecrets()) return res.status(500).json({ error: 'Set SESSION_SECRET on the server before storing keys.' });
+  const accessKey = req.body.accessKey?.trim();
+  const secretKey = req.body.secretKey?.trim();
+  if (!accessKey || !secretKey) return res.status(400).json({ error: 'Paste both the Gong access key and the secret' });
+  try {
+    await gongProbe(accessKey, secretKey);
+  } catch (err) {
+    return res.status(400).json({
+      error: err.badKey ? 'Gong rejected that access key and secret. Check them and try again.' : `Could not verify the keys — ${err.message}`,
+    });
+  }
+  saveUserIntegration(req.user.email, 'gong', {
+    accessKey: encryptSecret(accessKey),
+    secretKey: encryptSecret(secretKey),
+    hint: lastFour(accessKey),
+    setAt: new Date().toISOString(),
+  });
+  res.json(userIntegrations(req.user.email));
+});
+
+for (const service of ['avoma', 'gong']) {
+  app.delete(`/api/settings/${service}`, requireAuth, (req, res) => {
+    saveUserIntegration(req.user.email, service, null);
+    res.json(userIntegrations(req.user.email));
+  });
+}
+
 async function recordingsFor(email, days, { refresh, progress }) {
   const creds = recordingCredsFor(email);
-  const key = `${creds.domain}:${days}:${creds.avoma?.source || '-'}:${creds.gong?.source || '-'}`;
+  const key = `${email.toLowerCase()}:${days}:${creds.avoma ? 'a' : '-'}${creds.gong ? 'g' : '-'}`;
   const hit = recordingsCache.get(key);
   if (!refresh && hit && Date.now() - hit.fetchedAt < RECORDINGS_TTL) {
     progress(`Using recordings fetched at ${clockTime(hit.fetchedAt)} (cached)`);
@@ -3233,8 +3213,8 @@ async function recordingsFor(email, days, { refresh, progress }) {
   const to = new Date();
   const from = new Date(to.getTime() - days * 86400_000);
 
-  const avoma = { connected: !!creds.avoma, source: creds.avoma?.source || null, meetings: [], error: null, truncated: false };
-  const gong = { connected: !!creds.gong, source: creds.gong?.source || null, meetings: [], error: null, truncated: false };
+  const avoma = { connected: !!creds.avoma, meetings: [], error: null, truncated: false };
+  const gong = { connected: !!creds.gong, meetings: [], error: null, truncated: false };
   await Promise.all([
     creds.avoma && (async () => {
       progress('Asking Avoma for meetings');
@@ -3269,12 +3249,10 @@ const involves = (recording, email) =>
 
 app.get('/api/recordings', requireAuth, async (req, res) => {
   const email = req.user.email.toLowerCase();
-  const domain = email.split('@')[1];
   const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
-  // Recordings are company-wide; everyone sees the ones they were in, and
-  // admins can see the whole org's.
-  const canSeeOrg = isActiveAdmin(req) || administeredDomains(email).includes(domain);
-  const scope = req.query.scope === 'org' && canSeeOrg ? 'org' : 'me';
+  // The keys are the user's own, so they can list everything those keys can
+  // see, or just the recordings they were in.
+  const scope = req.query.scope === 'all' ? 'all' : 'me';
   const progress = progressFor(req);
 
   try {
@@ -3321,13 +3299,12 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
     }
 
     progress('Done');
-    const visible = list => (scope === 'org' ? list : list.filter(r => involves(r, email)))
+    const visible = list => (scope === 'all' ? list : list.filter(r => involves(r, email)))
       .slice()
       .sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
     res.json({
       days,
       scope,
-      canSeeOrg,
       from: recordings.from.toISOString(),
       to: recordings.to.toISOString(),
       fetchedAt: new Date(recordings.fetchedAt).toISOString(),

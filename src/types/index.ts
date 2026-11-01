@@ -121,10 +121,10 @@ export interface AssistantChatSession extends Omit<AssistantChatSummary, 'messag
   messages: AssistantChatMessage[];
 }
 
+/** One of your own recording connections (Avoma, Gong). */
 export interface IntegrationStatus {
   connected: boolean;
   hint?: string;
-  setBy?: string | null;
   setAt?: string | null;
 }
 
@@ -153,7 +153,6 @@ export interface AttendedMeeting {
 
 export interface RecordingSource {
   connected: boolean;
-  source: 'org' | 'server' | null;
   meetings: Recording[];
   error: string | null;
   truncated: boolean;
@@ -169,9 +168,6 @@ export interface Org {
   anthropicKeyHint?: string | null;
   anthropicKeySetBy?: string | null;
   anthropicKeySetAt?: string | null;
-  /** Recording integrations, shared by everyone on the org's domain. */
-  avoma?: IntegrationStatus;
-  gong?: IntegrationStatus;
   /** First person on the org's domain to sign in after it was created. */
   adminEmail: string | null;
   adminClaimedAt: string | null;

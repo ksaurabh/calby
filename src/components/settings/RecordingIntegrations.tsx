@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import type { IntegrationStatus, Org } from '../../types';
+import { useEffect, useState } from 'react';
+import type { IntegrationStatus } from '../../types';
 import { api } from '../../utils/api';
 import { formatDate } from '../../utils/format';
 import { Button } from '../common';
+
+type Statuses = { avoma: IntegrationStatus; gong: IntegrationStatus };
 
 const inputClass =
   'flex-1 min-w-48 rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
@@ -18,13 +20,13 @@ const SERVICES: ServiceConfig[] = [
   {
     key: 'avoma',
     label: 'Avoma',
-    where: 'Avoma → Settings → Integrations → API. Needs access to meetings.',
+    where: 'Avoma → Settings → Integrations → API.',
     fields: [{ name: 'API key', placeholder: 'Avoma API key' }],
   },
   {
     key: 'gong',
     label: 'Gong',
-    where: 'Gong → Company settings → Ecosystem → API: create an access key and secret.',
+    where: 'Gong → Company settings → Ecosystem → API: an access key and its secret.',
     fields: [
       { name: 'Access key', placeholder: 'Access key' },
       { name: 'Secret', placeholder: 'Access key secret' },
@@ -32,11 +34,10 @@ const SERVICES: ServiceConfig[] = [
   },
 ];
 
-function ServiceRow({ org, service, status, onChanged }: {
-  org: Org;
+function ServiceRow({ service, status, onChange }: {
   service: ServiceConfig;
   status: IntegrationStatus | undefined;
-  onChanged: () => void;
+  onChange: (next: Statuses) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<string[]>(service.fields.map(() => ''));
@@ -49,11 +50,9 @@ function ServiceRow({ org, service, status, onChanged }: {
     setError(null);
     try {
       const [first, second] = values.map(v => v.trim());
-      if (service.key === 'avoma') await api.setOrgAvoma(org.id, first);
-      else await api.setOrgGong(org.id, first, second);
+      onChange(service.key === 'avoma' ? await api.setAvoma(first) : await api.setGong(first, second));
       setValues(service.fields.map(() => ''));
       setEditing(false);
-      onChanged();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -62,12 +61,11 @@ function ServiceRow({ org, service, status, onChanged }: {
   };
 
   const remove = async () => {
-    if (!window.confirm(`Disconnect ${service.label} for ${org.name}?`)) return;
+    if (!window.confirm(`Disconnect ${service.label}?`)) return;
     setBusy(true);
     setError(null);
     try {
-      await api.removeOrgIntegration(org.id, service.key);
-      onChanged();
+      onChange(await api.removeIntegration(service.key));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -76,13 +74,11 @@ function ServiceRow({ org, service, status, onChanged }: {
   };
 
   return (
-    <div className="py-2">
+    <div className="py-3">
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm mb-2">{error}</div>}
       {editing ? (
         <form onSubmit={save} className="space-y-2">
-          <label className="block text-xs font-medium text-gray-700">
-            {service.label} for everyone at {org.domain || 'this organization'}
-          </label>
+          <label className="block text-sm font-medium text-gray-700">{service.label}</label>
           <div className="flex gap-2 flex-wrap">
             {service.fields.map((field, i) => (
               <input
@@ -109,23 +105,20 @@ function ServiceRow({ org, service, status, onChanged }: {
             </Button>
           </div>
           <p className="text-xs text-gray-500">
-            {service.where} Checked against {service.label} before saving, stored encrypted, never shown again.
+            {service.where} Checked against {service.label} before saving, stored encrypted, and never shown again.
           </p>
         </form>
       ) : (
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="text-xs">
+          <div className="text-sm">
+            <span className="font-medium text-gray-900">{service.label}</span>
             {status?.connected ? (
-              <>
-                <span className="text-gray-700 font-medium">{service.label} connected</span>
-                <span className="text-gray-500">
-                  {' '}· <code className="font-mono">{status.hint}</code>
-                  {status.setBy && ` · by ${status.setBy}`}
-                  {status.setAt && ` on ${formatDate(status.setAt)}`}
-                </span>
-              </>
+              <span className="text-gray-500">
+                {' '}· connected · <code className="font-mono text-xs">{status.hint}</code>
+                {status.setAt && ` · since ${formatDate(status.setAt)}`}
+              </span>
             ) : (
-              <span className="text-gray-500">{service.label} not connected.</span>
+              <span className="text-gray-500"> · not connected</span>
             )}
           </div>
           <div className="flex gap-1">
@@ -141,15 +134,30 @@ function ServiceRow({ org, service, status, onChanged }: {
 }
 
 /**
- * The org's Avoma and Gong connections, shared by everyone on its domain —
- * used to find each meeting's recording.
+ * Your own Avoma and Gong connections, used by the Recordings page to find
+ * each meeting's recording. Personal: nobody else's recordings use them.
  */
-export function OrgIntegrations({ org, onChanged }: { org: Org; onChanged: () => void }) {
+export function RecordingIntegrations() {
+  const [statuses, setStatuses] = useState<Statuses | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.integrations().then(setStatuses).catch(e => setError((e as Error).message));
+  }, []);
+
   return (
-    <div className="mt-2 border-t border-gray-100 pt-1 divide-y divide-gray-50">
-      {SERVICES.map(service => (
-        <ServiceRow key={service.key} org={org} service={service} status={org[service.key]} onChanged={onChanged} />
-      ))}
-    </div>
+    <section className="bg-white rounded-xl border border-gray-200 p-6">
+      <h2 className="font-semibold text-gray-900">Recording integrations</h2>
+      <p className="text-sm text-gray-500 mt-1">
+        Your own Avoma and Gong API keys, used on the Recordings page to find each meeting's recording.
+        Only you use them.
+      </p>
+      {error && <div className="mt-3 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}
+      <div className="mt-2 divide-y divide-gray-100">
+        {SERVICES.map(service => (
+          <ServiceRow key={service.key} service={service} status={statuses?.[service.key]} onChange={setStatuses} />
+        ))}
+      </div>
+    </section>
   );
 }

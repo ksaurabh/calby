@@ -3,6 +3,7 @@ import { api } from '../../utils/api';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common';
 import { DailyCostChart } from './DailyCostChart';
+import { RecordingIntegrations } from './RecordingIntegrations';
 import type { DailyCost } from './DailyCostChart';
 
 interface Usage {
@@ -56,9 +57,11 @@ export function SettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-sm text-gray-500 mt-1">
-          What the AI features have cost, and on whose key they are running.
+          Your connections, and what the AI features have cost.
         </p>
       </div>
+
+      <RecordingIntegrations />
 
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>}
 

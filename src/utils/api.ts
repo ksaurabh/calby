@@ -1,4 +1,5 @@
 import type {
+  IntegrationStatus,
   AttendedMeeting,
   RecordingSource,
   AssistantChatSession,
@@ -297,22 +298,30 @@ export const api = {
   removeOrgAnthropicKey: (id: string) =>
     request<Org>(`/api/orgs/${id}/anthropic-key`, { method: 'DELETE' }),
 
-  // Recording integrations (per org)
-  setOrgAvoma: (id: string, apiKey: string) =>
-    request<Org>(`/api/orgs/${id}/avoma`, { method: 'PUT', body: JSON.stringify({ apiKey }) }),
+  // Your own Avoma and Gong connections
+  integrations: () =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/integrations'),
 
-  setOrgGong: (id: string, accessKey: string, secretKey: string) =>
-    request<Org>(`/api/orgs/${id}/gong`, { method: 'PUT', body: JSON.stringify({ accessKey, secretKey }) }),
+  setAvoma: (apiKey: string) =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/avoma', {
+      method: 'PUT',
+      body: JSON.stringify({ apiKey }),
+    }),
 
-  removeOrgIntegration: (id: string, service: 'avoma' | 'gong') =>
-    request<Org>(`/api/orgs/${id}/${service}`, { method: 'DELETE' }),
+  setGong: (accessKey: string, secretKey: string) =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/gong', {
+      method: 'PUT',
+      body: JSON.stringify({ accessKey, secretKey }),
+    }),
+
+  removeIntegration: (service: 'avoma' | 'gong') =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>(`/api/settings/${service}`, { method: 'DELETE' }),
 
   // Recordings from Avoma and Gong, and calendar meetings without one
-  recordings: (options: { days: number; scope: 'me' | 'org'; refresh?: boolean }, progressId?: string) =>
+  recordings: (options: { days: number; scope: 'me' | 'all'; refresh?: boolean }, progressId?: string) =>
     request<{
       days: number;
-      scope: 'me' | 'org';
-      canSeeOrg: boolean;
+      scope: 'me' | 'all';
       from: string;
       to: string;
       fetchedAt: string;
