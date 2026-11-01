@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { CalendarEvent, CommitmentType, EventType, SlotDay } from '../../types';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CalendarEvent, CommitmentType, EventType, SchedulingRules, SlotDay } from '../../types';
 import { api } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
@@ -10,11 +10,32 @@ import type { ProgressStep } from '../common/ProgressSteps';
 
 interface Availability {
   days: SlotDay[];
+  rules: SchedulingRules;
+  guidance: string;
+  draft: boolean;
+  calendarFetchedAt: string;
   events: CalendarEvent[];
   commitmentTypes: CommitmentType[];
   durationMinutes: number;
   reviewNote: string | null;
   drops: { start: string; reason: string }[];
+}
+
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+
+interface LoadOptions {
+  durationMinutes?: number;
+  /** Unsaved guidance to preview; omit for the saved guidance. */
+  guidance?: string;
+  /** Re-read the calendar from Google instead of the recent copy. */
+  refresh?: boolean;
+}
+
+function timeAgo(iso: string, now: number): string {
+  const minutes = Math.floor((now - Date.parse(iso)) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes === 1) return '1 minute ago';
+  return `${minutes} minutes ago`;
 }
 
 /**
@@ -41,8 +62,15 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   // What the server is doing while the availability loads.
   const [steps, setSteps] = useState<ProgressStep[]>([]);
   const [startedAt, setStartedAt] = useState(() => Date.now());
+  // The guidance being edited; recalculating previews it without saving.
+  const [guidanceText, setGuidanceText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const loadingRef = useRef(false);
 
-  const load = useCallback(async (durationMinutes?: number) => {
+  const load = useCallback(async (options: LoadOptions = {}) => {
+    loadingRef.current = true;
     setLoading(true);
     setError(null);
     setSteps([]);
@@ -66,12 +94,16 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         setError('That event type no longer exists.');
         return;
       }
-      setAvailability(await api.eventTypeAvailability(eventTypeId, durationMinutes, progressId));
+      const result = await api.eventTypeAvailability(eventTypeId, options, progressId);
+      setAvailability(result);
+      // First load: start the editor from the saved guidance.
+      setGuidanceText(text => text || result.guidance);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       finished = true;
       clearInterval(poll);
+      loadingRef.current = false;
       setLoading(false);
     }
   }, [eventTypeId]);
@@ -80,6 +112,58 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
+
+  // What the current preview was computed from, so a reload keeps it.
+  const current = useCallback((): LoadOptions => ({
+    durationMinutes: availability?.durationMinutes,
+    guidance: availability?.draft ? availability.guidance : undefined,
+  }), [availability]);
+
+  // Re-read the calendar every five minutes, keeping whatever is previewed.
+  // Skipped while another load is running or the tab is in the background.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (loadingRef.current || document.hidden) return;
+      load({ ...current(), refresh: true });
+    }, AUTO_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load, current]);
+
+  // Keeps "read 3 minutes ago" current.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const recalculate = () => {
+    setNotice(null);
+    setPicked(null);
+    load({ durationMinutes: availability?.durationMinutes, guidance: guidanceText });
+  };
+
+  const saveGuidance = async () => {
+    if (!availability?.draft) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await api.updateEventType(eventTypeId, { guidance: availability.guidance });
+      setEventType(updated);
+      setNotice('Guidance saved. Your booking link now offers these slots.');
+      // Same guidance as just previewed: rules, calendar and review are all cached.
+      await load({ durationMinutes: availability.durationMinutes });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const discardDraft = () => {
+    if (!eventType) return;
+    setGuidanceText(eventType.guidance);
+    setNotice(null);
+    load({ durationMinutes: availability?.durationMinutes });
+  };
 
   const back = () => navigate('/');
 
@@ -97,7 +181,12 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     setAnswer(null);
     setAnswerError(null);
     try {
-      setAnswer(await api.explainSlot(eventTypeId, picked, availability?.durationMinutes || 30));
+      setAnswer(await api.explainSlot(
+        eventTypeId,
+        picked,
+        availability?.durationMinutes || 30,
+        availability?.draft ? availability.guidance : undefined
+      ));
     } catch (e) {
       setAnswerError((e as Error).message);
     } finally {
@@ -121,9 +210,6 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         )}
       </div>
       <div className="flex gap-2">
-        <Button variant="secondary" onClick={() => load(availability?.durationMinutes)}>
-          Refresh
-        </Button>
         <Button onClick={back}>Done</Button>
       </div>
     </div>
@@ -151,11 +237,13 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     );
   }
 
+  // The rules behind what's on screen: the draft's while previewing one.
+  const rules = availability.rules;
   const window = {
-    timezone: eventType.rules.timezone,
-    startMinute: eventType.rules.startMinute,
-    endMinute: eventType.rules.endMinute,
-    weeks: eventType.rules.horizonWeeks,
+    timezone: rules.timezone,
+    startMinute: rules.startMinute,
+    endMinute: rules.endMinute,
+    weeks: rules.horizonWeeks,
   };
   const shared = {
     window,
@@ -164,9 +252,8 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     pageOffset,
     onPageOffsetChange: setPageOffset,
   };
-  const options = eventType.rules.durationOptions?.length
-    ? eventType.rules.durationOptions
-    : [eventType.rules.durationMinutes];
+  const options = rules.durationOptions?.length ? rules.durationOptions : [rules.durationMinutes];
+  const edited = guidanceText.trim() !== availability.guidance.trim();
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -177,13 +264,75 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         </div>
       )}
 
+      <div className="mb-4 grid gap-4 lg:grid-cols-[1fr_auto]">
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="flex items-baseline justify-between gap-3 mb-2">
+            <label htmlFor="guidance" className="font-medium text-gray-900">Guidance</label>
+            <span className="text-xs text-gray-500">When may people book this? Plain English.</span>
+          </div>
+          <textarea
+            id="guidance"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm min-h-24 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+            value={guidanceText}
+            onChange={e => setGuidanceText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && edited && !loading) recalculate();
+            }}
+          />
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button onClick={recalculate} disabled={loading || !edited || !guidanceText.trim()}>
+              Recalculate available slots
+            </Button>
+            {edited && !loading && (
+              <span className="text-xs text-gray-500">Edited · ⌘/Ctrl+Enter to recalculate</span>
+            )}
+          </div>
+          {rules.summary && (
+            <p className="mt-3 text-xs text-gray-600">
+              <span className="font-medium text-gray-700">Read as:</span> {rules.summary}
+            </p>
+          )}
+          {availability.draft && (
+            <div className="mt-3 rounded-lg bg-amber-50 text-amber-900 px-3 py-2 text-sm flex flex-wrap items-center gap-2">
+              <span className="flex-1 min-w-48">
+                Previewing <strong>unsaved</strong> guidance — your booking link still uses the saved version.
+              </span>
+              <Button onClick={saveGuidance} disabled={saving || loading}>
+                {saving ? 'Saving…' : 'Save guidance'}
+              </Button>
+              <Button variant="secondary" onClick={discardDraft} disabled={saving || loading}>Discard</Button>
+            </div>
+          )}
+          {notice && <div className="mt-3 rounded-lg bg-green-50 text-green-800 px-3 py-2 text-sm">{notice}</div>}
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-4 text-sm lg:w-64">
+          <div className="font-medium text-gray-900">Calendar</div>
+          <p className="text-gray-600 mt-1">
+            Read from Google at {new Date(availability.calendarFetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            <span className="text-gray-400"> · {timeAgo(availability.calendarFetchedAt, now)}</span>
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            Recalculating reuses this copy. It re-reads automatically every 5 minutes.
+          </p>
+          <Button
+            variant="secondary"
+            className="mt-3 w-full"
+            disabled={loading}
+            onClick={() => { setNotice(null); load({ ...current(), refresh: true }); }}
+          >
+            Refresh calendar now
+          </Button>
+        </div>
+      </div>
+
       {options.length > 1 && (
         <div className="flex items-center gap-2 flex-wrap mb-4">
           <span className="text-sm text-gray-600">Meeting length</span>
           {options.map(minutes => (
             <button
               key={minutes}
-              onClick={() => load(minutes)}
+              onClick={() => load({ ...current(), durationMinutes: minutes })}
               className={`text-sm px-3 py-1.5 rounded-lg border transition-colors ${
                 availability.durationMinutes === minutes
                   ? 'border-blue-600 bg-blue-600 text-white'
@@ -203,7 +352,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
             <ul className="mt-2 space-y-1 text-xs text-blue-800">
               {availability.drops.slice(0, 8).map(drop => (
                 <li key={drop.start}>
-                  · {formatDateTime(drop.start, eventType.rules.timezone)} — {drop.reason}
+                  · {formatDateTime(drop.start, rules.timezone)} — {drop.reason}
                 </li>
               ))}
               {availability.drops.length > 8 && <li>· and {availability.drops.length - 8} more</li>}
@@ -214,13 +363,17 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
 
       {availability.days.length === 0 && (
         <div className="mb-4 rounded-lg bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-          No open slots in the next {eventType.rules.horizonWeeks} week(s) — your calendar is
+          No open slots in the next {rules.horizonWeeks} week(s) — your calendar is
           full, or the guidance is narrower than you intended.
         </div>
       )}
 
       <div className="mb-4">
-        <SuggestSlots eventType={eventType} durationMinutes={availability.durationMinutes} />
+        <SuggestSlots
+          eventType={{ ...eventType, rules }}
+          durationMinutes={availability.durationMinutes}
+          guidance={availability.draft ? availability.guidance : undefined}
+        />
       </div>
 
       {/*
@@ -236,7 +389,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
           commitmentTypes={availability.commitmentTypes}
           paired
           onPickTime={pickTime}
-          snapMinutes={eventType.rules.slotIntervalMinutes}
+          snapMinutes={rules.slotIntervalMinutes}
           selectedTime={picked}
         />
         <p className="text-xs text-gray-500 mt-2">
@@ -249,10 +402,10 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between gap-4 flex-wrap">
           <div>
             <div className="font-medium text-gray-900">
-              {formatDateTime(picked, eventType.rules.timezone)}
+              {formatDateTime(picked, rules.timezone)}
             </div>
             <div className="text-xs text-gray-500 mt-0.5">
-              {availability.durationMinutes} minutes · {eventType.rules.timezone}
+              {availability.durationMinutes} minutes · {rules.timezone}
             </div>
           </div>
           <div className="flex gap-2">
@@ -267,7 +420,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
       <Modal
         isOpen={showAnswer}
         onClose={() => setShowAnswer(false)}
-        title={picked ? formatDateTime(picked, eventType.rules.timezone) : ''}
+        title={picked ? formatDateTime(picked, rules.timezone) : ''}
       >
         {answerError ? (
           <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>

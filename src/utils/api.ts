@@ -160,27 +160,40 @@ export const api = {
       `/api/progress/${encodeURIComponent(id)}`
     ),
 
-  eventTypeAvailability: (id: string, durationMinutes?: number, progressId?: string) =>
+  // The owner's preview. `guidance` previews unsaved guidance; `refresh`
+  // re-reads the calendar from Google instead of using the recent copy.
+  eventTypeAvailability: (
+    id: string,
+    options: { durationMinutes?: number; guidance?: string; refresh?: boolean } = {},
+    progressId?: string
+  ) =>
     request<{
       days: SlotDay[];
       rules: SchedulingRules;
+      guidance: string;
+      draft: boolean;
       events: CalendarEvent[];
       commitmentTypes: CommitmentType[];
       durationMinutes: number;
       reviewNote: string | null;
       drops: { start: string; reason: string }[];
+      calendarFetchedAt: string;
     }>(
-      `/api/event-types/${id}/availability?${new URLSearchParams({
-        ...(durationMinutes ? { duration: String(durationMinutes) } : {}),
-        ...(progressId ? { progress: progressId } : {}),
-      })}`
+      `/api/event-types/${id}/availability${progressId ? `?progress=${encodeURIComponent(progressId)}` : ''}`,
+      { method: 'POST', body: JSON.stringify(options) }
     ),
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
   suggestSlots: (
     eventTypeId: string,
-    options: { count: number; fromBusinessDay: number; toBusinessDay: number; durationMinutes: number }
+    options: {
+      count: number;
+      fromBusinessDay: number;
+      toBusinessDay: number;
+      durationMinutes: number;
+      guidance?: string;
+    }
   ) =>
     request<{
       slots: { start: string; end: string }[];
@@ -196,7 +209,7 @@ export const api = {
       body: JSON.stringify(options),
     }),
 
-  explainSlot: (eventTypeId: string, start: string, durationMinutes: number) =>
+  explainSlot: (eventTypeId: string, start: string, durationMinutes: number, guidance?: string) =>
     request<{
       start: string;
       durationMinutes: number;
@@ -206,7 +219,7 @@ export const api = {
       explained: boolean;
     }>(`/api/event-types/${eventTypeId}/slot-explanation`, {
       method: 'POST',
-      body: JSON.stringify({ start, durationMinutes }),
+      body: JSON.stringify({ start, durationMinutes, guidance }),
     }),
 
   // Public booking page (no authentication)

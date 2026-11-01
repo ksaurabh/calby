@@ -502,6 +502,77 @@ function saveCalendarFor(email, calendar) {
   saveUsers(users);
 }
 
+// ---------------------------------------------------------------------------
+// Calendar snapshots — a short-lived copy of what Google returned, so the
+// owner's preview can be recalculated (new guidance, another meeting length)
+// without reading the calendar again. Only the owner's own preview and
+// explanations use it; public booking pages and bookings always read live, so
+// a cached copy can never hand out a slot that has since been taken.
+// ---------------------------------------------------------------------------
+const calendarSnapshots = new Map();
+// The preview page re-reads every 5 minutes; this is the outer limit.
+const SNAPSHOT_TTL = 10 * 60 * 1000;
+
+/**
+ * Busy intervals (and, with withEvents, the entries) for [from, to), from the
+ * cache when a fresh-enough copy covers that window, otherwise from Google.
+ */
+async function calendarSnapshot(email, refreshToken, from, to, { withEvents = true, fresh = false } = {}) {
+  const key = email.toLowerCase();
+  const cached = calendarSnapshots.get(key);
+  const usable = !fresh && cached &&
+    Date.now() - cached.fetchedAt < SNAPSHOT_TTL &&
+    cached.from <= from && cached.to >= to &&
+    (!withEvents || cached.events);
+  if (usable) {
+    return {
+      fromCache: true,
+      fetchedAt: cached.fetchedAt,
+      busy: cached.busy.filter(b => b.end > from && b.start < to),
+      events: withEvents
+        ? cached.events.filter(e => new Date(e.end) > from && new Date(e.start) < to)
+        : null,
+    };
+  }
+  const token = await accessTokenFor(email, refreshToken);
+  const [busy, events] = await Promise.all([
+    fetchBusy(token, from, to),
+    withEvents ? fetchEvents(token, from, to) : Promise.resolve(null),
+  ]);
+  const fetchedAt = Date.now();
+  calendarSnapshots.set(key, { fetchedAt, from, to, busy, events });
+  return { fromCache: false, fetchedAt, busy, events };
+}
+
+const clockTime = ms => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+// The model's reading of a piece of guidance, remembered so previewing a draft
+// and then saving it costs one reading, not two.
+const interpretations = new Map();
+const INTERPRETATIONS_MAX = 200;
+
+async function interpretGuidanceCached(guidance, { timezone, email }) {
+  const key = fingerprintOf({ guidance, timezone });
+  const hit = interpretations.get(key);
+  if (hit) return hit;
+  const apiKey = anthropicKeyFor(email);
+  const result = await interpretGuidance(guidance, {
+    timezone,
+    apiKey: apiKey.key,
+    email,
+    keySource: apiKey.source,
+  });
+  // Only keep model readings: a text fallback (no key, or a failed call)
+  // should be retried next time.
+  if (result.source === 'claude') {
+    if (interpretations.size >= INTERPRETATIONS_MAX) {
+      interpretations.delete(interpretations.keys().next().value);
+    }
+    interpretations.set(key, result);
+  }
+  return result;
+}
+
 // Busy time + open slots for one event type. Shared by the owner's preview and
 // the public booking page.
 // `review` controls the commitment-aware pass over the candidate slots:
@@ -511,7 +582,15 @@ function saveCalendarFor(email, calendar) {
 // trigger a model call, and the page stays fast.
 async function availabilityFor(
   eventType,
-  { ignoreBookingId = null, durationMinutes = null, review = 'cached', progress = () => {} } = {}
+  {
+    ignoreBookingId = null,
+    durationMinutes = null,
+    review = 'cached',
+    progress = () => {},
+    // 'live' (default) reads Google every time; 'use' takes a recent snapshot
+    // when there is one; 'refresh' reads Google and updates the snapshot.
+    calendarCache = 'live',
+  } = {}
 ) {
   const calendar = calendarFor(eventType.ownerEmail);
   if (!calendar?.refreshToken) {
@@ -523,9 +602,25 @@ async function availabilityFor(
   const now = new Date();
   const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
   const weeks = eventType.rules.horizonWeeks;
-  progress(`Reading your free/busy time for the next ${weeks} week${weeks === 1 ? '' : 's'}`);
+  const useSnapshot = calendarCache !== 'live';
   const token = await accessTokenFor(eventType.ownerEmail, calendar.refreshToken);
-  let busy = await fetchBusy(token, now, horizonEnd);
+  let busy;
+  let snapshotEvents = null;
+  let calendarFetchedAt = Date.now();
+  if (useSnapshot) {
+    const snap = await calendarSnapshot(eventType.ownerEmail, calendar.refreshToken, now, horizonEnd, {
+      fresh: calendarCache === 'refresh',
+    });
+    progress(snap.fromCache
+      ? `Using your calendar as read at ${clockTime(snap.fetchedAt)} (cached — Refresh to re-read it)`
+      : `Read your calendar for the next ${weeks} week${weeks === 1 ? '' : 's'} from Google`);
+    busy = snap.busy;
+    snapshotEvents = snap.events;
+    calendarFetchedAt = snap.fetchedAt;
+  } else {
+    progress(`Reading your free/busy time for the next ${weeks} week${weeks === 1 ? '' : 's'}`);
+    busy = await fetchBusy(token, now, horizonEnd);
+  }
 
   // Bookings we made are already on the calendar, but freeBusy can lag a moment;
   // excluding them explicitly avoids handing out the same slot twice.
@@ -549,6 +644,13 @@ async function availabilityFor(
         return { ...base, error: 'no calendar connected' };
       }
       try {
+        if (useSnapshot) {
+          const snap = await calendarSnapshot(colleagueEmail, user.calendar.refreshToken, now, horizonEnd, {
+            withEvents: false,
+            fresh: calendarCache === 'refresh',
+          });
+          return { ...base, busy: snap.busy };
+        }
         const colleagueToken = await accessTokenFor(colleagueEmail, user.calendar.refreshToken);
         return { ...base, busy: await fetchBusy(colleagueToken, now, horizonEnd) };
       } catch (err) {
@@ -566,9 +668,13 @@ async function availabilityFor(
   // the slot review something to reason about.
   let events = [];
   let assignments = new Map();
-  if (bookOver.length || apiKey) {
-    progress('Fetching your calendar entries');
-    events = await fetchEvents(token, now, horizonEnd);
+  if (snapshotEvents || bookOver.length || apiKey) {
+    if (snapshotEvents) {
+      events = snapshotEvents;
+    } else {
+      progress('Fetching your calendar entries');
+      events = await fetchEvents(token, now, horizonEnd);
+    }
     if (review === 'compute') {
       const { pending } = splitCached(events, commitmentTypes);
       if (pending.length && commitmentTypes.length) {
@@ -588,6 +694,7 @@ async function availabilityFor(
   // One decision function: the generator diagnoses every candidate, and keeps
   // the ones with no reasons against them.
   const slotInputs = {
+    calendarFetchedAt,
     rules: eventType.rules,
     busy,
     now,
@@ -1244,12 +1351,10 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
   // Re-read the guidance only when it actually changed — one model call per edit.
   let { rules, rulesSource, rulesUpdatedAt } = current;
   if (guidance !== current.guidance) {
-    const key = anthropicKeyFor(req.user.email);
-    const interpreted = await interpretGuidance(guidance, {
+    // Usually already read while previewing it, so this costs nothing.
+    const interpreted = await interpretGuidanceCached(guidance, {
       timezone: current.rules.timezone,
-      apiKey: key.key,
       email: req.user.email,
-      keySource: key.source,
     });
     rules = interpreted.rules;
     rulesSource = interpreted.source;
@@ -1324,30 +1429,57 @@ app.get('/api/progress/:id', requireAuth, (req, res) => {
   });
 });
 
-// The owner's own preview: bookable slots plus the meetings already on their
-// calendar, so the two can be seen side by side.
-app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
-  const eventType = getEventTypes().find(
+// The event type as the preview should treat it: with unsaved draft guidance
+// read into rules when the owner is trying some out, otherwise as saved.
+async function previewTarget(req, eventType, draftGuidance, progress = () => {}) {
+  const draft = typeof draftGuidance === 'string' ? draftGuidance.trim() : '';
+  if (!draft || draft === eventType.guidance) return { target: eventType, draft: false };
+  if (draft.length > 10_000) {
+    const err = new Error('That guidance is too long');
+    err.status = 400;
+    throw err;
+  }
+  progress('Reading your edited guidance into scheduling rules (AI)');
+  const { rules, source } = await interpretGuidanceCached(draft, {
+    timezone: eventType.rules.timezone,
+    email: req.user.email,
+  });
+  return { target: { ...eventType, guidance: draft, rules, rulesSource: source }, draft: true };
+}
+
+function ownEventType(req) {
+  return getEventTypes().find(
     e => e.id === req.params.id && e.ownerEmail === req.user.email.toLowerCase()
   );
-  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+}
 
-  const durationMinutes = resolveDuration(eventType, req.query.duration);
-  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+// The owner's own preview: bookable slots plus the meetings already on their
+// calendar, so the two can be seen side by side.
+//
+// The calendar comes from a short-lived snapshot, so recalculating (edited
+// guidance, another meeting length) doesn't read Google again; `refresh`
+// re-reads it. `guidance` previews unsaved guidance without changing the
+// live booking link.
+async function previewAvailability(req, res, { duration, guidance, refresh }) {
+  const eventType = ownEventType(req);
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
 
   const progress = progressFor(req);
   try {
-    const { days, token, reviewNote, drops } = await availabilityFor(eventType, {
+    const { target, draft } = await previewTarget(req, eventType, guidance, progress);
+    // A draft may offer different lengths; fall back to its default.
+    const durationMinutes = resolveDuration(target, duration) || target.rules.durationMinutes;
+
+    const availability = await availabilityFor(target, {
       durationMinutes,
       review: 'compute',
       progress,
+      calendarCache: refresh ? 'refresh' : 'use',
     });
-    progress('Loading your meetings to show beside the slots');
-    const now = new Date();
-    const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
+    const { days, reviewNote, drops, calendarFetchedAt } = availability;
     // Event titles are the owner's own data — this route is behind requireAuth
     // and scoped to event types they own.
-    const events = await fetchEvents(token, now, horizonEnd);
+    const events = availability.events || [];
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
@@ -1362,18 +1494,35 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
 
     res.json({
       days,
-      rules: eventType.rules,
+      rules: target.rules,
+      guidance: target.guidance,
+      // True when these slots come from unsaved guidance.
+      draft,
       events: labelled,
       commitmentTypes,
       durationMinutes,
       // What the commitment-aware review did to the candidate slots.
       reviewNote,
       drops,
+      // When the calendar behind this was read from Google.
+      calendarFetchedAt: new Date(calendarFetchedAt).toISOString(),
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
   }
-});
+}
+
+app.get('/api/event-types/:id/availability', requireAuth, (req, res) =>
+  previewAvailability(req, res, { duration: req.query.duration, refresh: req.query.refresh === '1' })
+);
+
+app.post('/api/event-types/:id/availability', requireAuth, (req, res) =>
+  previewAvailability(req, res, {
+    duration: req.body.durationMinutes,
+    guidance: req.body.guidance,
+    refresh: !!req.body.refresh,
+  })
+);
 
 // The first N open slots inside a business-day window — "six times in the next
 // five business days", or "in 5 to 10 business days", where the window then
@@ -1387,17 +1536,21 @@ app.post('/api/event-types/:id/suggest-slots', requireAuth, async (req, res) => 
   const count = Math.min(20, Math.max(1, Number(req.body.count) || 6));
   const from = Math.min(30, Math.max(1, Number(req.body.fromBusinessDay) || 1));
   const to = Math.min(30, Math.max(from, Number(req.body.toBusinessDay) || from));
-  const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
-  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
-
   try {
-    const availability = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
+    const { target } = await previewTarget(req, eventType, req.body.guidance);
+    const durationMinutes = resolveDuration(target, req.body.durationMinutes);
+    if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+    const availability = await availabilityFor(target, {
+      durationMinutes,
+      review: 'cached',
+      calendarCache: 'use',
+    });
     const result = slotsInBusinessDays({
       days: availability.days,
       count,
       from,
       to,
-      timezone: eventType.rules.timezone,
+      timezone: target.rules.timezone,
       now: availability.now || new Date(),
     });
     res.json({
@@ -1406,7 +1559,7 @@ app.post('/api/event-types/:id/suggest-slots', requireAuth, async (req, res) => 
       fromBusinessDay: from,
       toBusinessDay: to,
       durationMinutes,
-      timezone: eventType.rules.timezone,
+      timezone: target.rules.timezone,
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
@@ -1424,26 +1577,28 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
   if (!start || Number.isNaN(Date.parse(start))) {
     return res.status(400).json({ error: 'Pick a time' });
   }
-  const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
-  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
-
   try {
+    // Explain against what the preview is showing: draft guidance included.
+    const { target } = await previewTarget(req, eventType, req.body.guidance);
+    const durationMinutes = resolveDuration(target, req.body.durationMinutes);
+    if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+
     // Reuse exactly what the availability computation decided. Times on the slot
     // grid already have a verdict; anything else (a click between slots, outside
     // the window) is diagnosed with the same function.
-    const availability = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
+    const availability = await availabilityFor(target, { durationMinutes, review: 'cached', calendarCache: 'use' });
     const startIso = new Date(start).toISOString();
     const diagnosis =
       availability.diagnoses?.get(startIso) ||
       diagnoseSlot({
-        rules: eventType.rules,
+        rules: target.rules,
         start: startIso,
         durationMinutes,
         busy: availability.busy || [],
         events: availability.events || [],
         assignments: availability.assignments || new Map(),
         commitmentTypes: availability.commitmentTypes || [],
-        bookOver: eventType.bookOverCommitmentTypeIds || [],
+        bookOver: target.bookOverCommitmentTypeIds || [],
         takenStarts: availability.takenStarts || [],
         drops: availability.drops || [],
         colleagues: availability.colleagues || [],
@@ -1453,9 +1608,9 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
     const key = anthropicKeyFor(req.user.email);
     const explanation = await explainSlot({
       diagnosis,
-      eventType,
+      eventType: target,
       start,
-      timezone: eventType.rules.timezone,
+      timezone: target.rules.timezone,
       apiKey: key.key,
       email: req.user.email,
       keySource: key.source,

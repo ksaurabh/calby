@@ -20,9 +20,12 @@ interface Suggestion {
 export function SuggestSlots({
   eventType,
   durationMinutes,
+  guidance,
 }: {
   eventType: EventType;
   durationMinutes: number;
+  /** Unsaved guidance being previewed, if any. */
+  guidance?: string;
 }) {
   const [count, setCount] = useState(6);
   const [from, setFrom] = useState(1);
@@ -44,6 +47,7 @@ export function SuggestSlots({
         fromBusinessDay: useRange ? from : 1,
         toBusinessDay: to,
         durationMinutes,
+        guidance,
       }));
     } catch (err) {
       setError((err as Error).message);
