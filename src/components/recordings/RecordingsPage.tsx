@@ -94,9 +94,14 @@ function MeetingsTable({ meetings, timezone, showRecordings, actions }: {
                     href={r.url || undefined}
                     target="_blank"
                     rel="noreferrer"
-                    title={[r.title, matchNote(r.how, r.deltaMinutes)].filter(Boolean).join(' · ')}
+                    title={[
+                      r.title,
+                      matchNote(r.how, r.deltaMinutes),
+                      r.unconfirmed && 'Avoma did not say whether it recorded this',
+                    ].filter(Boolean).join(' · ')}
                   >
                     <SourceBadge source={r.source} />
+                    {r.unconfirmed && <span className="text-[11px] text-amber-600">?</span>}
                   </a>
                 ))}
               </td>
@@ -116,6 +121,9 @@ function RecordingsTable({ label, source, data, timezone }: {
   timezone: string;
 }) {
   const [open, setOpen] = useState(true);
+  const isAvoma = label === 'Avoma';
+  const notRecorded = source.meetings.filter(m => m.recorded === false).length;
+  const unconfirmed = source.meetings.filter(m => m.recorded == null).length;
   return (
     <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <button
@@ -124,7 +132,12 @@ function RecordingsTable({ label, source, data, timezone }: {
       >
         <div>
           <h2 className="font-semibold text-gray-900">
-            {label} {source.connected && <span className="text-gray-400 font-normal">({source.meetings.length})</span>}
+            {label}{' '}
+            {source.connected && (
+              <span className="text-gray-400 font-normal">
+                ({source.meetings.length}{isAvoma && notRecorded > 0 ? `, ${notRecorded} not recorded` : ''})
+              </span>
+            )}
           </h2>
           <p className="text-xs text-gray-500">
             {!source.connected
@@ -142,6 +155,12 @@ function RecordingsTable({ label, source, data, timezone }: {
               There were more than could be read in one go; the oldest may be missing.
             </div>
           )}
+          {isAvoma && notRecorded > 0 && (
+            <p className="px-5 pb-2 text-xs text-gray-500">
+              {notRecorded} of these {notRecorded === 1 ? 'was' : 'were'} not recorded by Avoma, so{' '}
+              {notRecorded === 1 ? "it doesn't" : "they don't"} count as a recording of any meeting.
+            </p>
+          )}
           {!source.error && source.meetings.length === 0 ? (
             <p className="px-5 pb-4 text-sm text-gray-500">No meetings in this window.</p>
           ) : (
@@ -151,6 +170,7 @@ function RecordingsTable({ label, source, data, timezone }: {
                   <th className="px-4 py-2 font-medium w-44">When</th>
                   <th className="px-4 py-2 font-medium">Meeting</th>
                   <th className="px-4 py-2 font-medium">Attendees</th>
+                  {isAvoma && <th className="px-4 py-2 font-medium w-32">Recorded?</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -164,10 +184,42 @@ function RecordingsTable({ label, source, data, timezone }: {
                       <People people={m.attendees} max={5} />
                       <span className="text-xs text-gray-400"> · {m.attendees.length}</span>
                     </td>
+                    {isAvoma && (
+                      <td className="px-4 py-2 whitespace-nowrap" title={m.state ? `Avoma state: ${m.state}` : undefined}>
+                        {m.recorded === true ? (
+                          <span className="text-xs text-emerald-700">Recorded</span>
+                        ) : m.recorded === false ? (
+                          <span className="text-xs text-gray-500">Not recorded</span>
+                        ) : (
+                          <span className="text-xs text-amber-700">Not confirmed</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
             </table>
+          )}
+          {isAvoma && source.diagnostics && source.meetings.length > 0 && (
+            <details className="px-5 py-3 border-t border-gray-100 text-xs text-gray-500">
+              <summary className="cursor-pointer">What Avoma sent (to check how it marks recordings)</summary>
+              <p className="mt-2">
+                {unconfirmed > 0
+                  ? `${unconfirmed} meeting${unconfirmed === 1 ? '' : 's'} had no recognisable recording signal and are shown as "Not confirmed" (still counted as recorded). `
+                  : ''}
+                Fields: <code className="font-mono">{source.diagnostics.fields.join(', ')}</code>
+              </p>
+              {Object.keys(source.diagnostics.values).length > 0 && (
+                <ul className="mt-1 space-y-0.5">
+                  {Object.entries(source.diagnostics.values).map(([field, counts]) => (
+                    <li key={field}>
+                      <code className="font-mono">{field}</code>:{' '}
+                      {Object.entries(counts).map(([value, n]) => `${value} ×${n}`).join(', ')}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </details>
           )}
         </>
       )}

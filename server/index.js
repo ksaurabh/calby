@@ -3290,6 +3290,7 @@ async function recordingsFor(email, days, { refresh, progress }) {
         const r = await avomaMeetings(creds.avoma.apiKey, from, to, { onProgress: progress });
         avoma.meetings = r.meetings;
         avoma.truncated = r.truncated;
+        avoma.diagnostics = r.diagnostics;
       } catch (err) {
         avoma.error = err.message;
       }
@@ -3392,7 +3393,11 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
 
   try {
     const recordings = await recordingsFor(email, days, { refresh: req.query.refresh === '1', progress });
-    const all = [...recordings.avoma.meetings, ...recordings.gong.meetings];
+    // An Avoma meeting its notetaker never recorded is not a recording.
+    const all = [
+      ...recordings.avoma.meetings.filter(m => m.recorded !== false),
+      ...recordings.gong.meetings,
+    ];
 
     // Calendar meetings that had people in them: timed (not all-day), already
     // over, not declined, and with at least one attendee besides you.
@@ -3426,7 +3431,11 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
               attendees: e.attendees
                 .filter(a => !a.self && a.email !== email)
                 .map(a => ({ email: a.email, name: a.name, responseStatus: a.responseStatus })),
-              recordings: matches.map(r => ({ source: r.source, id: r.id, title: r.title, url: r.url, start: r.start })),
+              recordings: matches.map(r => ({
+                source: r.source, id: r.id, title: r.title, url: r.url, start: r.start,
+                // Avoma didn't say whether it recorded this one.
+                ...(r.source === 'avoma' && r.recorded == null ? { unconfirmed: true } : {}),
+              })),
             };
           })
           .sort((a, b) => b.start.localeCompare(a.start));

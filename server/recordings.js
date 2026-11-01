@@ -114,6 +114,59 @@ function avomaAttendees(m) {
     .filter(a => a.email || a.name);
 }
 
+// Avoma lists every meeting it knows about — including ones synced from the
+// calendar that its notetaker never joined. Its public docs aren't readable
+// here, so whether a meeting was recorded is read defensively from the
+// signals a payload may carry, and reported as unknown (null) when there
+// are none:
+//   - a recording/transcript id or media URL  -> recorded
+//   - an "*_ready" / is_recorded style flag     -> recorded when true
+//   - a state/status like completed, processed  -> recorded
+//   - a state/status like scheduled, cancelled,
+//     missed, failed, not recorded              -> not recorded
+const AVOMA_RECORDED_IDS = [
+  'recording_uuid', 'recording_id', 'recording_url', 'audio_url', 'video_url',
+  'transcription_uuid', 'transcript_uuid', 'transcription_id', 'transcript_id',
+];
+const AVOMA_RECORDED_FLAGS = [
+  'is_recorded', 'recorded', 'has_recording', 'audio_ready', 'video_ready',
+  'transcript_ready', 'transcription_ready', 'recording_ready',
+];
+const AVOMA_STATUS_FIELDS = ['state', 'status', 'processing_status', 'recording_status', 'transcription_status'];
+const NOT_RECORDED = /not[\s_-]*recorded|no[\s_-]*recording|cancel|missed|skipp|scheduled|upcoming|future|declin|fail|denied|removed|no[\s_-]*show|did[\s_-]*not/i;
+const RECORDED = /complet|processed|ready|transcri|recorded|available|done|finished/i;
+
+export function avomaRecorded(m) {
+  if (AVOMA_RECORDED_FLAGS.some(k => m?.[k] === true)) return true;
+  if (AVOMA_RECORDED_IDS.some(k => m?.[k])) return true;
+  const statuses = AVOMA_STATUS_FIELDS.map(k => m?.[k]).filter(v => typeof v === 'string' && v);
+  if (statuses.some(v => NOT_RECORDED.test(v))) return false;
+  if (statuses.some(v => RECORDED.test(v))) return true;
+  if (AVOMA_RECORDED_FLAGS.some(k => m?.[k] === false)) return false;
+  return null;
+}
+
+// What Avoma actually sent, for working out the recorded signal: every field
+// name, and the values of short enum-like fields (states, flags) — never
+// titles, notes or attendees.
+function avomaDiagnostics(rows) {
+  const fields = new Set();
+  const values = {};
+  for (const m of rows) {
+    for (const [k, v] of Object.entries(m || {})) {
+      fields.add(k);
+      const enumLike = AVOMA_STATUS_FIELDS.includes(k) || AVOMA_RECORDED_FLAGS.includes(k) ||
+        /ready|record|status|state|is_|has_/.test(k);
+      if (!enumLike) continue;
+      if (!(typeof v === 'boolean' || (typeof v === 'string' && v.length <= 40) || v === null)) continue;
+      const key = v === null ? 'null' : String(v);
+      values[k] = values[k] || {};
+      values[k][key] = (values[k][key] || 0) + 1;
+    }
+  }
+  return { fields: [...fields].sort(), values };
+}
+
 function avomaMeeting(m) {
   const id = String(pick(m, ['uuid', 'id', 'meeting_uuid']));
   return {
@@ -125,7 +178,9 @@ function avomaMeeting(m) {
     url: pick(m, ['url', 'avoma_url', 'share_url', 'meeting_url']) || (id ? `https://app.avoma.com/meetings/${id}` : ''),
     organizer: String(pick(m, ['organizer_email', 'host_email', 'organizer'])).toLowerCase(),
     attendees: avomaAttendees(m),
-    state: pick(m, ['state', 'status']) || '',
+    state: pick(m, ['state', 'status', 'processing_status']) || '',
+    // true / false / null (Avoma didn't say).
+    recorded: avomaRecorded(m),
   };
 }
 
@@ -141,20 +196,22 @@ export async function avomaMeetings(apiKey, from, to, { onProgress } = {}) {
   let path = `/meetings/?from_date=${encodeURIComponent(isoSeconds(from))}` +
     `&to_date=${encodeURIComponent(isoSeconds(to))}&page_size=${AVOMA_PAGE_SIZE}&o=-start_at`;
   const meetings = [];
+  const raw = [];
   let pages = 0;
   while (path && pages < AVOMA_MAX_PAGES) {
     const data = await avomaGet(apiKey, path, {
       onWait: ms => onProgress?.(`Avoma is rate-limiting — waiting ${Math.round(ms / 1000)}s before continuing`),
     });
     pages += 1;
-    for (const raw of avomaRows(data)) {
-      const m = avomaMeeting(raw);
+    for (const row of avomaRows(data)) {
+      raw.push(row);
+      const m = avomaMeeting(row);
       if (m.id) meetings.push(m);
     }
     onProgress?.(`Reading Avoma meetings — ${meetings.length}${data?.count != null ? ` of ${data.count}` : ''} so far`);
     path = avomaNextPath(data?.next);
   }
-  return { meetings, truncated: !!path };
+  return { meetings, truncated: !!path, diagnostics: avomaDiagnostics(raw) };
 }
 
 // ---------------------------------------------------------------------------

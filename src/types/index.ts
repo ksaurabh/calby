@@ -142,6 +142,9 @@ export interface Recording {
   url: string;
   organizer: string;
   attendees: { email: string; name: string; affiliation?: string }[];
+  /** Avoma only: whether its notetaker recorded it; null when Avoma doesn't say. */
+  recorded?: boolean | null;
+  state?: string;
   /** Zoom only. */
   meetingNumber?: string | null;
   durationMin?: number | null;
@@ -165,6 +168,8 @@ export interface AttendedMeeting {
     start: string | null;
     /** Zoom only: matched by meeting number or by time. */
     how?: 'meeting number' | 'time';
+    /** Avoma only: it didn't say whether it recorded this. */
+    unconfirmed?: boolean;
     deltaMinutes?: number;
   }[];
   /** The recurring series this is an instance of, if any. */
@@ -186,6 +191,8 @@ export interface RecordingSource {
   connected: boolean;
   /** Zoom: whose recordings these are. */
   userEmail?: string | null;
+  /** Avoma: field names and enum-like values it returned, to see how it marks recordings. */
+  diagnostics?: { fields: string[]; values: Record<string, Record<string, number>> };
   meetings: Recording[];
   error: string | null;
   truncated: boolean;
