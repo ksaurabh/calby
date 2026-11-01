@@ -27,6 +27,18 @@ import type {
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
+/** A proposed guidance edit that would let one time be booked, checked by the server. */
+export interface GuidanceSuggestion {
+  guidance: string;
+  change: string;
+  readAs: string;
+  /** The guidance no longer stands in the way of the time. */
+  verified: boolean;
+  /** The time would actually be offered (nothing else blocks it either). */
+  opensSlot: boolean;
+  remainingReasons: { code: string; detail: string }[];
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
@@ -217,6 +229,8 @@ export const api = {
       reasons: { code: string; detail: string }[];
       explanation: string;
       explained: boolean;
+      fixableByGuidance: boolean;
+      suggestion: GuidanceSuggestion | null;
     }>(`/api/event-types/${eventTypeId}/slot-explanation`, {
       method: 'POST',
       body: JSON.stringify({ start, durationMinutes, guidance }),

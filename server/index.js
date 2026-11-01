@@ -41,7 +41,14 @@ import {
   fingerprintOf,
   splitCached,
 } from './classify.js';
-import { askCalendar, buildCalendarContext, explainEventMatch, explainSlot } from './assistant.js';
+import {
+  GUIDANCE_FIXABLE,
+  askCalendar,
+  buildCalendarContext,
+  explainEventMatch,
+  explainSlot,
+  suggestGuidanceFix,
+} from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 import { gmailConsentUrl, gmailProfile } from './gmail.js';
 import {
@@ -1606,17 +1613,66 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
       });
 
     const key = anthropicKeyFor(req.user.email);
-    const explanation = await explainSlot({
-      diagnosis,
-      eventType: target,
-      start,
-      timezone: target.rules.timezone,
-      apiKey: key.key,
-      email: req.user.email,
-      keySource: key.source,
-    });
+    const llm = { apiKey: key.key, email: req.user.email, keySource: key.source };
+    const fixable = diagnosis.reasons.some(r => GUIDANCE_FIXABLE.has(r.code));
+    const [explanation, proposal] = await Promise.all([
+      explainSlot({ diagnosis, eventType: target, start, timezone: target.rules.timezone, ...llm }),
+      suggestGuidanceFix({ diagnosis, eventType: target, start, timezone: target.rules.timezone, ...llm })
+        .catch(err => {
+          console.error('[slot-explanation] suggestion failed:', err.message);
+          return null;
+        }),
+    ]);
 
-    res.json({ start, durationMinutes, ...diagnosis, explanation, explained: !!key.key });
+    // Check the suggestion rather than trust it: read it into rules (cached, so
+    // trying it afterwards is free) and run the same diagnosis against the
+    // same calendar. The commitment-aware review would run afresh for new
+    // guidance, so its old verdict is left out of the check.
+    let suggestion = null;
+    if (proposal) {
+      const { rules } = await interpretGuidanceCached(proposal.guidance, {
+        timezone: target.rules.timezone,
+        email: req.user.email,
+      });
+      const checkDuration = (rules.durationOptions?.length ? rules.durationOptions : [rules.durationMinutes])
+        .includes(durationMinutes) ? durationMinutes : rules.durationMinutes;
+      const check = diagnoseSlot({
+        rules,
+        start: startIso,
+        durationMinutes: checkDuration,
+        busy: availability.busy || [],
+        events: availability.events || [],
+        assignments: availability.assignments || new Map(),
+        commitmentTypes: availability.commitmentTypes || [],
+        bookOver: target.bookOverCommitmentTypeIds || [],
+        takenStarts: availability.takenStarts || [],
+        drops: [],
+        colleagues: availability.colleagues || [],
+        now: availability.now || new Date(),
+      });
+      const stillFromGuidance = check.reasons.filter(r => GUIDANCE_FIXABLE.has(r.code));
+      suggestion = {
+        guidance: proposal.guidance,
+        change: proposal.change,
+        readAs: rules.summary || '',
+        // The guidance no longer stands in the way of this time.
+        verified: stillFromGuidance.length === 0,
+        // Whether the time would then actually be offered.
+        opensSlot: check.open,
+        remainingReasons: check.reasons,
+      };
+    }
+
+    res.json({
+      start,
+      durationMinutes,
+      ...diagnosis,
+      explanation,
+      explained: !!key.key,
+      // Whether any of the reasons are down to the guidance at all.
+      fixableByGuidance: fixable,
+      suggestion,
+    });
   } catch (err) {
     console.error('[slot-explanation] failed:', err.message);
     res.status(err.status || 502).json({ error: err.message });

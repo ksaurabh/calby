@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import type { CalendarEvent, CommitmentType, SlotDay } from '../../types';
 import {
   dateKeyInZone,
@@ -66,6 +66,8 @@ interface AvailabilityCalendarProps {
   snapMinutes?: number;
   /** Highlight the time currently being asked about. */
   selectedTime?: string | null;
+  /** Shown in a small popover right at the selected time (e.g. actions). */
+  selectionActions?: ReactNode;
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -118,6 +120,7 @@ export function AvailabilityCalendar({
   onPickTime,
   snapMinutes = 30,
   selectedTime = null,
+  selectionActions,
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
   const [ownOffset, setOwnOffset] = useState(0);
@@ -424,14 +427,33 @@ export function AvailabilityCalendar({
 
                   {selectedTime && kind !== 'events' &&
                     dateKeyInZone(selectedTime, tz) === key && (
-                      <div
-                        className="absolute left-0 right-0 border-t-2 border-blue-600 z-10 pointer-events-none"
-                        style={{ top: yFor(minutesInZone(selectedTime, tz)) }}
-                      >
-                        <span className="absolute -top-2 left-0 text-[9px] bg-blue-600 text-white px-1 rounded">
-                          {minuteLabel(minutesInZone(selectedTime, tz))}
-                        </span>
-                      </div>
+                      <>
+                        <div
+                          className="absolute left-0 right-0 border-t-2 border-blue-600 z-10 pointer-events-none"
+                          style={{ top: yFor(minutesInZone(selectedTime, tz)) }}
+                        >
+                          <span className="absolute -top-2 left-0 text-[9px] bg-blue-600 text-white px-1 rounded">
+                            {minuteLabel(minutesInZone(selectedTime, tz))}
+                          </span>
+                        </div>
+                        {selectionActions && (
+                          <div
+                            // Opens toward the middle of the grid so it isn't clipped at the edges.
+                            className={`absolute z-30 w-max cursor-default ${
+                              index > columns.length / 2 ? 'right-1' : 'left-1'
+                            }`}
+                            // Near the bottom of the day it opens upward instead.
+                            style={
+                              yFor(minutesInZone(selectedTime, tz)) > gridHeight - 110
+                                ? { bottom: gridHeight - yFor(minutesInZone(selectedTime, tz)) + 6 }
+                                : { top: yFor(minutesInZone(selectedTime, tz)) + 6 }
+                            }
+                            onClick={e => e.stopPropagation()}
+                          >
+                            {selectionActions}
+                          </div>
+                        )}
+                      </>
                     )}
 
                   {showOpen && open.map(block => (

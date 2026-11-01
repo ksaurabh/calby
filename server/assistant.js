@@ -293,3 +293,98 @@ export async function askCalendar({ question, context, history = [], apiKey, ema
     .join('\n')
     .trim();
 }
+
+// ---------------------------------------------------------------------------
+// Suggesting a guidance change that would open a slot
+// ---------------------------------------------------------------------------
+// Which reasons a guidance edit can remove. Calendar conflicts, existing
+// bookings and colleagues' busy time are facts about the calendar, not the
+// rules — no rewording of the guidance changes them.
+export const GUIDANCE_FIXABLE = new Set([
+  'outside-days',
+  'outside-hours',
+  'off-grid',
+  'too-soon',
+  'past-horizon',
+  'max-per-day',
+  'buffer-conflict',
+  'dropped-by-review',
+]);
+
+const FIX_SYSTEM = `You help someone adjust the plain-English availability
+guidance for one of their booking links, so that one specific time becomes
+bookable.
+
+You are given their current guidance verbatim, the rules it was read as, the
+time in question, and the authoritative reasons it is not offered. Rewrite the
+guidance with the smallest change that removes the reasons you are asked to
+fix — widen the hours a little, add the weekday, shorten the notice period,
+extend the horizon, reduce the buffer, relax the daily cap, or soften the
+instruction that caused the review to drop it.
+
+Rules:
+- Keep everything else exactly as they wrote it: same tone, same wording where
+  possible, same other constraints. Do not tidy up or rephrase unrelated parts.
+- Prefer a targeted exception ("…, and Fridays until 6pm") over loosening a
+  rule everywhere, when that fits how they wrote it.
+- Return the complete revised guidance, ready to paste in.`;
+
+/**
+ * Propose a minimal edit to the guidance that would make `start` bookable.
+ * Returns { guidance, change } or null when no guidance edit could help.
+ */
+export async function suggestGuidanceFix({ diagnosis, eventType, start, timezone, apiKey, email, keySource }) {
+  const fixable = diagnosis.reasons.filter(r => GUIDANCE_FIXABLE.has(r.code));
+  if (diagnosis.open || !fixable.length || !apiKey) return null;
+
+  const when = new Date(start).toLocaleString('en-US', {
+    timeZone: timezone,
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+
+  const response = await callClaude({
+    model: 'claude-opus-5',
+    max_tokens: 2000,
+    system: FIX_SYSTEM,
+    tools: [{
+      name: 'propose_guidance',
+      description: 'The revised guidance and what changed.',
+      strict: true,
+      input_schema: {
+        type: 'object',
+        properties: {
+          revised_guidance: { type: 'string', description: 'The full revised guidance text' },
+          change: { type: 'string', description: 'One sentence: what you changed and why' },
+        },
+        required: ['revised_guidance', 'change'],
+        additionalProperties: false,
+      },
+    }],
+    tool_choice: { type: 'tool', name: 'propose_guidance' },
+    messages: [{
+      role: 'user',
+      content: [
+        `Current guidance, verbatim:\n"""\n${eventType.guidance}\n"""`,
+        `It was read as: ${eventType.rules.summary || JSON.stringify(eventType.rules)}`,
+        `Meeting length: ${diagnosis.context.durationMinutes} minutes. Timezone: ${timezone}.`,
+        `The time that should become bookable: ${when}.`,
+        '',
+        'Reasons to fix (authoritative):',
+        ...fixable.map(r => `- [${r.code}] ${r.detail}`),
+        ...(fixable.length < diagnosis.reasons.length
+          ? [
+              '',
+              'Also blocking, but NOT fixable through guidance (leave these alone):',
+              ...diagnosis.reasons.filter(r => !GUIDANCE_FIXABLE.has(r.code)).map(r => `- ${r.detail}`),
+            ]
+          : []),
+      ].join('\n'),
+    }],
+  }, { apiKey, email, keySource, feature: 'guidance-suggestion' });
+
+  const block = response.content.find(b => b.type === 'tool_use');
+  const guidance = block?.input?.revised_guidance?.trim();
+  if (!guidance || guidance === eventType.guidance.trim()) return null;
+  return { guidance, change: block.input.change?.trim() || '' };
+}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CalendarEvent, CommitmentType, EventType, SchedulingRules, SlotDay } from '../../types';
-import { api } from '../../utils/api';
+import { api, type GuidanceSuggestion } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
 import { AvailabilityCalendar } from '../calendar';
@@ -56,6 +56,8 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     open: boolean;
     reasons: { code: string; detail: string }[];
     explanation: string;
+    fixableByGuidance: boolean;
+    suggestion: GuidanceSuggestion | null;
   } | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [pageOffset, setPageOffset] = useState(0);
@@ -156,6 +158,14 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Put a suggested guidance in the editor and preview it (unsaved).
+  const trySuggestion = (suggestion: GuidanceSuggestion) => {
+    setShowAnswer(false);
+    setNotice(null);
+    setGuidanceText(suggestion.guidance);
+    load({ durationMinutes: availability?.durationMinutes, guidance: suggestion.guidance });
   };
 
   const discardDraft = () => {
@@ -391,31 +401,30 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
           onPickTime={pickTime}
           snapMinutes={rules.slotIntervalMinutes}
           selectedTime={picked}
+          selectionActions={picked && (
+            <div className="rounded-lg border border-gray-200 bg-white shadow-lg p-2">
+              <div className="px-1 pb-1.5 text-xs font-medium text-gray-700">
+                {new Date(picked).toLocaleTimeString([], { timeZone: rules.timezone, hour: 'numeric', minute: '2-digit' })}
+                <span className="text-gray-400 font-normal"> · {availability.durationMinutes} min</span>
+              </div>
+              <div className="flex gap-1">
+                <Button className="!px-2.5 !py-1 text-xs" onClick={explainPicked}>Explain this slot</Button>
+                <Button
+                  variant="secondary"
+                  className="!px-2.5 !py-1 text-xs"
+                  onClick={() => { setPicked(null); setShowAnswer(false); }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         />
         <p className="text-xs text-gray-500 mt-2">
           Click any time in an <span className="text-emerald-700">Open slots</span> column —
-          including empty space — then choose <em>Explain this slot</em>.
+          including empty space — and choose <em>Explain this slot</em>.
         </p>
       </div>
-
-      {picked && (
-        <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <div className="font-medium text-gray-900">
-              {formatDateTime(picked, rules.timezone)}
-            </div>
-            <div className="text-xs text-gray-500 mt-0.5">
-              {availability.durationMinutes} minutes · {rules.timezone}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={explainPicked}>Explain this slot</Button>
-            <Button variant="secondary" onClick={() => { setPicked(null); setShowAnswer(false); }}>
-              Clear
-            </Button>
-          </div>
-        </div>
-      )}
 
       <Modal
         isOpen={showAnswer}
@@ -445,6 +454,48 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
                   <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
                 ))}
               </ul>
+            )}
+
+            {!answer.open && answer.suggestion && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2">
+                <div className="text-sm font-medium text-gray-900">To offer this time, change your guidance to:</div>
+                <pre className="whitespace-pre-wrap break-words font-sans text-sm text-gray-800 bg-white border border-gray-200 rounded-md p-2">
+                  {answer.suggestion.guidance}
+                </pre>
+                {answer.suggestion.change && (
+                  <p className="text-xs text-gray-600">{answer.suggestion.change}</p>
+                )}
+                <p
+                  className={`text-xs ${
+                    answer.suggestion.opensSlot
+                      ? 'text-emerald-700'
+                      : answer.suggestion.verified
+                        ? 'text-amber-700'
+                        : 'text-red-700'
+                  }`}
+                >
+                  {answer.suggestion.opensSlot
+                    ? '✓ Checked: with this guidance, this time would be offered.'
+                    : answer.suggestion.verified
+                      ? `✓ The guidance would no longer block it, but it still wouldn't be offered: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`
+                      : `⚠ Checked, and this wouldn't be enough: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`}
+                </p>
+                {answer.suggestion.readAs && (
+                  <p className="text-xs text-gray-500">Would be read as: {answer.suggestion.readAs}</p>
+                )}
+                <div className="flex justify-end">
+                  <Button onClick={() => trySuggestion(answer.suggestion!)}>Try this guidance</Button>
+                </div>
+                <p className="text-[11px] text-gray-400 text-right">
+                  Previews it here; your booking link changes only if you save.
+                </p>
+              </div>
+            )}
+            {!answer.open && !answer.fixableByGuidance && (
+              <p className="text-xs text-gray-500 border-t border-gray-100 pt-3">
+                This time is blocked by your calendar, not by your guidance, so no change to the
+                guidance would open it.
+              </p>
             )}
           </div>
         )}
