@@ -149,6 +149,19 @@ export interface AttendedMeeting {
   link: string | null;
   attendees: { email: string; name: string; responseStatus: string }[];
   recordings: { source: 'avoma' | 'gong'; id: string; title: string; url: string; start: string | null }[];
+  /** The recurring series this is an instance of, if any. */
+  recurringEventId: string | null;
+  /** Set when you've chosen to ignore it: just this one, or by an "always" rule. */
+  ignored?: { kind: 'once' | 'always'; ruleId?: string; at: string } | null;
+}
+
+/** "Always ignore": a recurring series, or every meeting with a title. */
+export interface IgnoreRule {
+  id: string;
+  kind: 'series' | 'title';
+  value: string;
+  title: string;
+  at: string;
 }
 
 export interface RecordingSource {

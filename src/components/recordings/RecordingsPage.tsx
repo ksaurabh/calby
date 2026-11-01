@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { AttendedMeeting, Recording, RecordingSource } from '../../types';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import type { AttendedMeeting, IgnoreRule, Recording, RecordingSource } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, ProgressSteps } from '../common';
@@ -36,6 +36,12 @@ function People({ people, max = 4 }: { people: { email: string; name: string }[]
   );
 }
 
+function ruleLabel(rule: IgnoreRule) {
+  return rule.kind === 'series'
+    ? `the recurring "${rule.title || 'untitled'}" series`
+    : `every meeting titled "${rule.title || rule.value}"`;
+}
+
 function SourceBadge({ source }: { source: 'avoma' | 'gong' }) {
   return (
     <span className={`inline-block text-[11px] px-1.5 py-0.5 rounded border ${SOURCE_STYLE[source]}`}>
@@ -44,10 +50,12 @@ function SourceBadge({ source }: { source: 'avoma' | 'gong' }) {
   );
 }
 
-function MeetingsTable({ meetings, timezone, showRecordings }: {
+function MeetingsTable({ meetings, timezone, showRecordings, actions }: {
   meetings: AttendedMeeting[];
   timezone: string;
   showRecordings?: boolean;
+  /** Buttons at the end of each row. */
+  actions?: (meeting: AttendedMeeting) => ReactNode;
 }) {
   return (
     <table className="w-full text-sm">
@@ -57,6 +65,7 @@ function MeetingsTable({ meetings, timezone, showRecordings }: {
           <th className="px-4 py-2 font-medium">Meeting</th>
           <th className="px-4 py-2 font-medium">With</th>
           {showRecordings && <th className="px-4 py-2 font-medium">Recording</th>}
+          {actions && <th className="px-4 py-2" />}
         </tr>
       </thead>
       <tbody className="divide-y divide-gray-100">
@@ -78,6 +87,7 @@ function MeetingsTable({ meetings, timezone, showRecordings }: {
                 ))}
               </td>
             )}
+            {actions && <td className="px-4 py-1.5 text-right whitespace-nowrap">{actions(m)}</td>}
           </tr>
         ))}
       </tbody>
@@ -164,6 +174,7 @@ export function RecordingsPage() {
   const [steps, setSteps] = useState<ProgressStep[]>([]);
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [showRecorded, setShowRecorded] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -195,6 +206,111 @@ export function RecordingsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
+
+  // Ignoring updates the page in place; the server stores the choice.
+  const byNewest = (a: AttendedMeeting, b: AttendedMeeting) => b.start.localeCompare(a.start);
+  const matchesRule = (m: AttendedMeeting, rule: IgnoreRule) =>
+    rule.kind === 'series'
+      ? m.recurringEventId === rule.value
+      : m.title.trim().toLowerCase().replace(/\s+/g, ' ') === rule.value;
+
+  const ignore = async (meeting: AttendedMeeting, always: boolean) => {
+    if (!data) return;
+    setBusyId(meeting.id);
+    setError(null);
+    try {
+      const { rule } = await api.ignoreMeeting({
+        eventId: meeting.id,
+        title: meeting.title,
+        start: meeting.start,
+        recurringEventId: meeting.recurringEventId,
+        always,
+      });
+      const at = new Date().toISOString();
+      setData(d => {
+        if (!d) return d;
+        const moving = d.calendar.unrecorded.filter(m => (rule ? matchesRule(m, rule) : m.id === meeting.id));
+        const ids = new Set(moving.map(m => m.id));
+        const tagged = moving.map(m => ({
+          ...m,
+          ignored: rule ? { kind: 'always' as const, ruleId: rule.id, at } : { kind: 'once' as const, at },
+        }));
+        return {
+          ...d,
+          calendar: {
+            ...d.calendar,
+            unrecorded: d.calendar.unrecorded.filter(m => !ids.has(m.id)),
+            ignored: [...d.calendar.ignored, ...tagged].sort(byNewest),
+          },
+          ignoreRules: rule && !d.ignoreRules.some(r => r.id === rule.id) ? [...d.ignoreRules, rule] : d.ignoreRules,
+        };
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Stop ignoring one meeting, or remove an "always" rule (which brings back
+  // every meeting it covered).
+  const restore = async (meeting: AttendedMeeting) => {
+    if (!data || !meeting.ignored) return;
+    const rule = meeting.ignored.kind === 'always'
+      ? data.ignoreRules.find(r => r.id === meeting.ignored!.ruleId)
+      : undefined;
+    if (rule) {
+      await removeRule(rule);
+      return;
+    }
+    setBusyId(meeting.id);
+    setError(null);
+    try {
+      await api.unignoreMeeting(meeting.id);
+      setData(d => d && {
+        ...d,
+        calendar: {
+          ...d.calendar,
+          unrecorded: [...d.calendar.unrecorded, { ...meeting, ignored: null }].sort(byNewest),
+          ignored: d.calendar.ignored.filter(m => m.id !== meeting.id),
+        },
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const removeRule = async (rule: IgnoreRule) => {
+    const covered = data?.calendar.ignored.filter(m => m.ignored?.ruleId === rule.id).length || 0;
+    if (covered > 1 && !window.confirm(
+      `Stop always ignoring ${ruleLabel(rule)}? ${covered} meetings in this window will be flagged again.`
+    )) return;
+    setBusyId(rule.id);
+    setError(null);
+    try {
+      await api.removeIgnoreRule(rule.id);
+      setData(d => {
+        if (!d) return d;
+        const back = d.calendar.ignored.filter(m => m.ignored?.ruleId === rule.id);
+        const ids = new Set(back.map(m => m.id));
+        return {
+          ...d,
+          calendar: {
+            ...d.calendar,
+            unrecorded: [...d.calendar.unrecorded, ...back.map(m => ({ ...m, ignored: null }))].sort(byNewest),
+            ignored: d.calendar.ignored.filter(m => !ids.has(m.id)),
+          },
+          ignoreRules: d.ignoreRules.filter(r => r.id !== rule.id),
+        };
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const tz = data?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const nothingConnected = data && !data.avoma.connected && !data.gong.connected;
@@ -282,10 +398,41 @@ export function RecordingsPage() {
               <p className="px-5 pb-4 text-sm text-gray-500">Connect Avoma or Gong to check for recordings.</p>
             ) : data.calendar.unrecorded.length === 0 ? (
               <p className="px-5 pb-4 text-sm text-emerald-700">
-                {data.calendar.meetings.length ? 'Every meeting with attendees has a recording.' : 'No meetings with attendees in this window.'}
+                {data.calendar.ignored.length
+                  ? `Nothing left to look at — the other ${data.calendar.ignored.length} without a recording are ignored (below).`
+                  : data.calendar.meetings.length
+                    ? 'Every meeting with attendees has a recording.'
+                    : 'No meetings with attendees in this window.'}
               </p>
             ) : (
-              <MeetingsTable meetings={data.calendar.unrecorded} timezone={tz} />
+              <MeetingsTable
+                meetings={data.calendar.unrecorded}
+                timezone={tz}
+                actions={m => (
+                  <div className="inline-flex gap-1">
+                    <Button
+                      variant="ghost"
+                      className="!px-2 !py-1 text-xs"
+                      disabled={busyId === m.id}
+                      onClick={() => ignore(m, false)}
+                      title="Stop flagging this one meeting"
+                    >
+                      Ignore
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="!px-2 !py-1 text-xs"
+                      disabled={busyId === m.id}
+                      onClick={() => ignore(m, true)}
+                      title={m.recurringEventId
+                        ? 'Never flag any meeting in this recurring series'
+                        : `Never flag any meeting titled "${m.title}"`}
+                    >
+                      Always ignore
+                    </Button>
+                  </div>
+                )}
+              />
             )}
             {(data.avoma.error || data.gong.error) && data.calendar.unrecorded.length > 0 && (
               <p className="px-5 py-2 text-xs text-amber-700 border-t border-gray-100">
@@ -320,6 +467,66 @@ export function RecordingsPage() {
 
           <RecordingsTable label="Avoma" source={data.avoma} data={data} timezone={tz} />
           <RecordingsTable label="Gong" source={data.gong} data={data} timezone={tz} />
+
+          {(data.calendar.ignored.length > 0 || data.ignoreRules.length > 0) && (
+            <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-5 py-3">
+                <h2 className="font-semibold text-gray-900">
+                  Ignored meetings <span className="text-gray-400 font-normal">({data.calendar.ignored.length})</span>
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Meetings without a recording that you've chosen not to be told about. Restore one to flag it again.
+                </p>
+              </div>
+              {data.calendar.ignored.length > 0 && (
+                <MeetingsTable
+                  meetings={data.calendar.ignored}
+                  timezone={tz}
+                  actions={m => {
+                    const rule = m.ignored?.kind === 'always'
+                      ? data.ignoreRules.find(r => r.id === m.ignored?.ruleId)
+                      : undefined;
+                    return (
+                      <div className="inline-flex items-center gap-2">
+                        <span className="text-xs text-gray-400">
+                          {rule ? `Always — ${ruleLabel(rule)}` : 'Ignored'}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          className="!px-2 !py-1 text-xs"
+                          disabled={busyId === m.id || (!!rule && busyId === rule.id)}
+                          onClick={() => restore(m)}
+                          title={rule ? 'Stop always ignoring these — brings back every meeting it covered' : 'Flag this meeting again'}
+                        >
+                          Restore
+                        </Button>
+                      </div>
+                    );
+                  }}
+                />
+              )}
+              {data.ignoreRules.length > 0 && (
+                <div className="px-5 py-3 border-t border-gray-100">
+                  <div className="text-xs font-medium text-gray-700 mb-1">Always ignoring</div>
+                  <ul className="space-y-1">
+                    {data.ignoreRules.map(rule => (
+                      <li key={rule.id} className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-600">{ruleLabel(rule)}</span>
+                        <Button
+                          variant="ghost"
+                          className="!px-2 !py-1 text-xs"
+                          disabled={busyId === rule.id}
+                          onClick={() => removeRule(rule)}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </section>
+          )}
         </>
       )}
     </div>

@@ -3244,6 +3244,73 @@ async function recordingsFor(email, days, { refresh, progress }) {
   return result;
 }
 
+// Meetings a user has chosen not to be told about. "Ignore" is one meeting;
+// "Always ignore" is a rule — the whole series for a recurring meeting, or
+// every meeting with that title otherwise. Stored on the user record.
+function ignoresFor(email) {
+  const stored = findUser(email)?.recordingIgnores || {};
+  return { meetings: stored.meetings || {}, rules: stored.rules || [] };
+}
+
+function saveIgnores(email, ignores) {
+  const users = getUsers();
+  const index = users.findIndex(u => u.email === email.toLowerCase());
+  if (index < 0) return;
+  users[index] = { ...users[index], recordingIgnores: ignores };
+  saveUsers(users);
+}
+
+const normTitle = title => String(title || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+// Why a meeting is ignored, or null.
+function ignoredBecause(meeting, ignores) {
+  if (ignores.meetings[meeting.id]) return { kind: 'once', at: ignores.meetings[meeting.id].at };
+  const rule = ignores.rules.find(r =>
+    r.kind === 'series' ? meeting.recurringEventId === r.value : normTitle(meeting.title) === r.value
+  );
+  return rule ? { kind: 'always', ruleId: rule.id, at: rule.at } : null;
+}
+
+const clip = (value, n) => String(value || '').slice(0, n);
+
+app.post('/api/recordings/ignore', requireAuth, (req, res) => {
+  const { eventId, title, start, recurringEventId, always } = req.body || {};
+  if (!eventId && !always) return res.status(400).json({ error: 'Which meeting?' });
+  const ignores = ignoresFor(req.user.email);
+  const at = new Date().toISOString();
+  if (always) {
+    const rule = recurringEventId
+      ? { kind: 'series', value: clip(recurringEventId, 300) }
+      : { kind: 'title', value: normTitle(clip(title, 300)) };
+    if (!rule.value) return res.status(400).json({ error: 'That meeting has no title to match on' });
+    let saved = ignores.rules.find(r => r.kind === rule.kind && r.value === rule.value);
+    if (!saved) {
+      saved = { id: generateId('ign'), ...rule, title: clip(title, 300), at };
+      ignores.rules.push(saved);
+    }
+    saveIgnores(req.user.email, ignores);
+    return res.json({ ok: true, rule: saved });
+  }
+  ignores.meetings[clip(eventId, 300)] = { title: clip(title, 300), start: clip(start, 40), at };
+  saveIgnores(req.user.email, ignores);
+  res.json({ ok: true, rule: null });
+});
+
+// Stop ignoring: one meeting, or remove an "always" rule.
+app.delete('/api/recordings/ignore/:eventId', requireAuth, (req, res) => {
+  const ignores = ignoresFor(req.user.email);
+  delete ignores.meetings[req.params.eventId];
+  saveIgnores(req.user.email, ignores);
+  res.json({ ok: true });
+});
+
+app.delete('/api/recordings/ignore-rules/:id', requireAuth, (req, res) => {
+  const ignores = ignoresFor(req.user.email);
+  ignores.rules = ignores.rules.filter(r => r.id !== req.params.id);
+  saveIgnores(req.user.email, ignores);
+  res.json({ ok: true });
+});
+
 const involves = (recording, email) =>
   recording.organizer === email || recording.attendees.some(a => a.email === email);
 
@@ -3285,6 +3352,7 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
               start: e.start,
               end: e.end,
               link: e.link,
+              recurringEventId: e.recurringEventId || null,
               organizer: e.organizer,
               attendees: e.attendees
                 .filter(a => !a.self && a.email !== email)
@@ -3299,6 +3367,10 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
     }
 
     progress('Done');
+    const ignores = ignoresFor(email);
+    const unrecorded = calendar.meetings
+      .filter(m => !m.recordings.length)
+      .map(m => ({ ...m, ignored: ignoredBecause(m, ignores) }));
     const visible = list => (scope === 'all' ? list : list.filter(r => involves(r, email)))
       .slice()
       .sort((a, b) => String(b.start || '').localeCompare(String(a.start || '')));
@@ -3313,8 +3385,13 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
       gong: { ...recordings.gong, meetings: visible(recordings.gong.meetings) },
       calendar: {
         ...calendar,
-        unrecorded: calendar.meetings.filter(m => !m.recordings.length),
+        unrecorded: unrecorded.filter(m => !m.ignored),
+        // Unrecorded meetings you've chosen to ignore, and why.
+        ignored: unrecorded.filter(m => m.ignored),
       },
+      // Your "always ignore" rules, so they can be removed even when no
+      // meeting in this window matches.
+      ignoreRules: ignores.rules,
     });
   } catch (err) {
     console.error('[recordings] failed:', err.message);

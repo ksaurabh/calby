@@ -168,6 +168,8 @@ export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } 
         optional: !!a.optional,
       })),
       recurring: !!e.recurringEventId,
+      // The series a recurring instance belongs to.
+      recurringEventId: e.recurringEventId || null,
       link: e.htmlLink || null,
     }))
     .filter(e => e.start && e.end);

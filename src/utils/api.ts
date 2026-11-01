@@ -1,4 +1,5 @@
 import type {
+  IgnoreRule,
   IntegrationStatus,
   AttendedMeeting,
   RecordingSource,
@@ -333,13 +334,28 @@ export const api = {
         error: string | null;
         meetings: AttendedMeeting[];
         unrecorded: AttendedMeeting[];
+        ignored: AttendedMeeting[];
       };
+      ignoreRules: IgnoreRule[];
     }>(`/api/recordings?${new URLSearchParams({
       days: String(options.days),
       scope: options.scope,
       ...(options.refresh ? { refresh: '1' } : {}),
       ...(progressId ? { progress: progressId } : {}),
     })}`),
+
+  // Meetings you don't want flagged as unrecorded
+  ignoreMeeting: (meeting: { eventId: string; title: string; start: string; recurringEventId: string | null; always: boolean }) =>
+    request<{ ok: boolean; rule: IgnoreRule | null }>('/api/recordings/ignore', {
+      method: 'POST',
+      body: JSON.stringify(meeting),
+    }),
+
+  unignoreMeeting: (eventId: string) =>
+    request<{ ok: boolean }>(`/api/recordings/ignore/${encodeURIComponent(eventId)}`, { method: 'DELETE' }),
+
+  removeIgnoreRule: (id: string) =>
+    request<{ ok: boolean }>(`/api/recordings/ignore-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Users
   listUsers: () =>
