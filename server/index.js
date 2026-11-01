@@ -2580,7 +2580,12 @@ function publicSession(session) {
         content: m.content,
         at: m.at,
         version: m.version ?? versions.length - 1,
-        versions: versions.map(v => ({ content: v.content, at: v.at, hasTrace: !!v.trace })),
+        versions: versions.map(v => ({
+          content: v.content,
+          at: v.at,
+          hasTrace: !!v.trace,
+          costUsd: v.trace ? traceTotalUsd(v.trace) : null,
+        })),
       };
     }),
   };
@@ -2763,13 +2768,21 @@ app.get('/api/chat/sessions/:id/messages/:index/trace', requireAuth, (req, res) 
   if (!entry.trace) {
     return res.status(404).json({ error: 'This response was generated before traces were recorded.' });
   }
-  // Traces from before tool use held a single call at the top level.
   const { request, response, ...rest } = entry.trace;
-  const calls = (entry.trace.calls || [{ at: entry.trace.at, durationMs: entry.trace.durationMs, request, response }])
-    .map(call => ({ ...call, cost: callCost(call) }));
+  const calls = traceCalls(entry.trace).map(call => ({ ...call, cost: callCost(call) }));
   const totalUsd = calls.reduce((sum, call) => sum + call.cost.totalUsd, 0);
   res.json({ version, ...rest, calls, totalUsd });
 });
+
+// Traces from before tool use held a single call at the top level.
+function traceCalls(trace) {
+  return trace.calls || [{ at: trace.at, durationMs: trace.durationMs, request: trace.request, response: trace.response }];
+}
+
+// What producing one response cost: every model call in its loop.
+function traceTotalUsd(trace) {
+  return traceCalls(trace).reduce((sum, call) => sum + callCost(call).totalUsd, 0);
+}
 
 // What one call cost, priced exactly as the usage log prices it (Settings ›
 // cost), with each kind of token shown separately.

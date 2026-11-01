@@ -54,6 +54,8 @@ export interface AssistantChatVersion {
   content: string;
   at: string;
   hasTrace: boolean;
+  /** What generating this version cost (all model calls); null if not recorded. */
+  costUsd: number | null;
 }
 
 export interface AssistantChatMessage {

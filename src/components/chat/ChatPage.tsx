@@ -8,6 +8,9 @@ import { TraceModal } from './TraceModal';
 
 const fullName = (a: { firstName: string; lastName: string }) => `${a.firstName} ${a.lastName}`.trim();
 
+const usd = (value: number) =>
+  value === 0 ? '$0' : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
+
 /**
  * Chat with your virtual assistant. Each message is answered with the same
  * prompt and context as an email to it, so this shows what it would reply.
@@ -297,6 +300,11 @@ export function ChatPage() {
                           >
                             Full trace
                           </button>
+                        )}
+                        {versions[version]?.costUsd != null && (
+                          <span className="px-1 text-gray-400" title="What generating this reply cost, across all model calls">
+                            {usd(versions[version].costUsd!)}
+                          </span>
                         )}
                       </div>
                     </div>
