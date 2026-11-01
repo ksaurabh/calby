@@ -87,6 +87,13 @@ English, and share a booking link that writes real invites to your calendar.
   to the OAuth consent screen, and an external-type app in testing mode needs
   the assistant's account listed as a test user. The refresh token is
   encrypted at rest like org API keys.
+- **Chat and Notes.** *Chat* in the sidebar starts a session with your domain's
+  virtual assistant (pick one if there are several). Answers use exactly the
+  same prompt and context as email, so a chat shows what the assistant would
+  reply. Sessions are kept per user in `server/chat-sessions.json`. *Notes* are
+  your own facts, preferences and standing instructions; every note (newest
+  first, up to ~40k characters) is sent as context whenever you email or chat
+  with the assistant.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

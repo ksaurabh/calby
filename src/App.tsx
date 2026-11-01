@@ -9,6 +9,8 @@ import { CommitmentTypesPage } from './components/commitments';
 import { SettingsPage } from './components/settings';
 import { BookingPage, ManageBookingPage } from './components/booking';
 import { AdminPage } from './components/admin';
+import { ChatPage } from './components/chat';
+import { NotesPage } from './components/notes';
 import { LoginPage, UnauthorizedPage, AuthCallback, RolePicker } from './components/auth';
 
 function viewFromPath(pathname: string): View {
@@ -92,6 +94,8 @@ function AppContent() {
       {effectiveView === 'orgs' && <OrgsPage />}
       {effectiveView === 'event-types' && <EventTypesPage />}
       {effectiveView === 'commitments' && <CommitmentTypesPage />}
+      {effectiveView === 'chat' && <ChatPage />}
+      {effectiveView === 'notes' && <NotesPage />}
       {effectiveView === 'settings' && <SettingsPage />}
       {effectiveView === 'admin' && <AdminPage />}
     </Layout>

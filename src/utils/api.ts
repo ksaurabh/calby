@@ -1,4 +1,8 @@
 import type {
+  AssistantChatSession,
+  AssistantChatSummary,
+  ChatAssistant,
+  Note,
   Booking,
   CalendarEvent,
   CalendarStatus,
@@ -270,6 +274,40 @@ export const api = {
     request<User>(`/api/users/${encodeURIComponent(email)}/role`, {
       method: 'PUT',
       body: JSON.stringify({ role }),
+    }),
+
+  // Notes — context for your virtual assistant
+  listNotes: () => request<{ notes: Note[]; maxChars: number }>('/api/notes'),
+
+  createNote: (data: { title: string; body: string }) =>
+    request<Note>('/api/notes', { method: 'POST', body: JSON.stringify(data) }),
+
+  updateNote: (id: string, data: { title?: string; body?: string }) =>
+    request<Note>(`/api/notes/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  deleteNote: (id: string) =>
+    request<{ success: boolean }>(`/api/notes/${id}`, { method: 'DELETE' }),
+
+  // Chat with your virtual assistant
+  chatAssistants: () => request<{ assistants: ChatAssistant[] }>('/api/chat/assistants'),
+
+  listChatSessions: () => request<{ sessions: AssistantChatSummary[] }>('/api/chat/sessions'),
+
+  createChatSession: (assistantId?: string) =>
+    request<AssistantChatSession>('/api/chat/sessions', {
+      method: 'POST',
+      body: JSON.stringify({ assistantId }),
+    }),
+
+  chatSession: (id: string) => request<AssistantChatSession>(`/api/chat/sessions/${id}`),
+
+  deleteChatSession: (id: string) =>
+    request<{ success: boolean }>(`/api/chat/sessions/${id}`, { method: 'DELETE' }),
+
+  sendChatMessage: (id: string, content: string) =>
+    request<AssistantChatSession>(`/api/chat/sessions/${id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
     }),
 
   // Virtual assistants

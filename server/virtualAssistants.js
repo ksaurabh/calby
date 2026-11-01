@@ -130,6 +130,9 @@ What you can do:
 - Answer questions about their calendar and their booking links, using only the
   calendar data provided below (when there is any). Never invent meetings or
   availability.
+- Use the notes they have written for you (when there are any). Treat them as
+  their own facts, preferences and standing instructions, and follow them unless
+  the email itself says otherwise.
 
 What you cannot do, and must say plainly when asked:
 - You cannot send email to anyone other than the person who wrote to you, create
@@ -144,34 +147,51 @@ How to write:
 - The email may quote earlier messages; the newest text at the top is the request.`;
 }
 
-async function writeReply({ assistant, sender, message, senderContext, keyInfo }) {
+function emailText({ sender, subject, date, body }) {
+  const trimmed = body.length > MAX_BODY_CHARS ? `${body.slice(0, MAX_BODY_CHARS)}\n[…truncated]` : body;
+  return [
+    `From: ${sender.name ? `${sender.name} <${sender.email}>` : sender.email}`,
+    `Subject: ${subject || '(no subject)'}`,
+    date ? `Date: ${date}` : null,
+    '',
+    trimmed || '(empty message)',
+  ].filter(v => v !== null).join('\n');
+}
+
+/**
+ * The assistant's answer to one request. Used for real email and for the
+ * in-app chat alike — same prompt, same context — so chatting shows exactly
+ * how the assistant would reply by email.
+ *
+ * `history` is earlier turns of the same conversation:
+ *   [{ role: 'user' | 'assistant', content }]
+ */
+export async function writeReply({
+  assistant, sender, subject, date, body, history = [], senderContext, keyInfo, feature = 'virtual-assistant',
+}) {
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
-  const body = message.body.length > MAX_BODY_CHARS
-    ? `${message.body.slice(0, MAX_BODY_CHARS)}\n[…truncated]`
-    : message.body;
 
   const system = [{ type: 'text', text: systemPrompt(assistant, sender, today) }];
   if (senderContext) {
     system.push({ type: 'text', text: `Data about ${sender.email}:\n\n${senderContext}` });
   }
 
+  const earlier = history
+    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content)
+    .slice(-20)
+    .map(m => ({
+      role: m.role,
+      content: m.role === 'user' ? emailText({ sender, subject, body: m.content }) : m.content,
+    }));
+
   const response = await callClaude({
     model: 'claude-opus-5',
     max_tokens: 4000,
     system,
-    messages: [{
-      role: 'user',
-      content: [
-        `From: ${sender.name ? `${sender.name} <${sender.email}>` : sender.email}`,
-        `Subject: ${message.subject || '(no subject)'}`,
-        message.date ? `Date: ${message.date}` : null,
-        '',
-        body || '(empty message)',
-      ].filter(v => v !== null).join('\n'),
-    }],
-  }, { apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature: 'virtual-assistant' });
+    messages: [...earlier, { role: 'user', content: emailText({ sender, subject, date, body }) }],
+  }, { apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature });
 
   return response.content
     .filter(block => block.type === 'text')
@@ -286,7 +306,9 @@ async function checkAssistantInner(assistantId, deps) {
       const reply = await writeReply({
         assistant,
         sender: { email: sender.email, name: sender.name || user.name || '' },
-        message,
+        subject: message.subject,
+        date: message.date,
+        body: message.body,
         senderContext,
         keyInfo,
       });

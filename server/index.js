@@ -45,6 +45,7 @@ import { gmailConsentUrl, gmailProfile } from './gmail.js';
 import {
   checkAssistant,
   getAssistants,
+  writeReply,
   publicAssistant,
   saveAssistants,
   startPolling,
@@ -65,6 +66,8 @@ const ORGS_FILE = join(__dirname, 'orgs.json');
 const EVENT_TYPES_FILE = join(__dirname, 'event-types.json');
 const BOOKINGS_FILE = join(__dirname, 'bookings.json');
 const COMMITMENT_TYPES_FILE = join(__dirname, 'commitment-types.json');
+const NOTES_FILE = join(__dirname, 'notes.json');
+const CHAT_SESSIONS_FILE = join(__dirname, 'chat-sessions.json');
 
 // Public base URL for links in calendar invites (the frontend origin).
 const PUBLIC_URL = (process.env.CLIENT_URL || 'http://localhost:5178').replace(/\/+$/, '');
@@ -98,6 +101,12 @@ if (!existsSync(BOOKINGS_FILE)) {
 }
 if (!existsSync(COMMITMENT_TYPES_FILE)) {
   writeFileSync(COMMITMENT_TYPES_FILE, JSON.stringify({ commitmentTypes: [] }, null, 2));
+}
+if (!existsSync(NOTES_FILE)) {
+  writeFileSync(NOTES_FILE, JSON.stringify({ notes: [] }, null, 2));
+}
+if (!existsSync(CHAT_SESSIONS_FILE)) {
+  writeFileSync(CHAT_SESSIONS_FILE, JSON.stringify({ sessions: [] }, null, 2));
 }
 
 // ---------------------------------------------------------------------------
@@ -2073,6 +2082,19 @@ async function assistantSenderContext(email) {
   const timezone = ownerTimezone(email);
   const sections = [];
 
+  const notes = notesFor(email);
+  if (notes.length) {
+    let budget = NOTES_CONTEXT_CHARS;
+    const rendered = [];
+    for (const note of notes) {
+      const text = `- ${note.title ? `${note.title}: ` : ''}${note.body}`;
+      if (text.length > budget) break;
+      rendered.push(text);
+      budget -= text.length;
+    }
+    sections.push(`Notes they have written for you (${rendered.length} of ${notes.length}):\n${rendered.join('\n')}`);
+  }
+
   const eventTypes = getEventTypes().filter(e => e.ownerEmail === email.toLowerCase() && e.active);
   if (eventTypes.length) {
     const lines = ['Their booking links (event types):'];
@@ -2112,6 +2134,79 @@ async function assistantSenderContext(email) {
   }
   return sections.join('\n\n');
 }
+
+// ---------------------------------------------------------------------------
+// Notes — things a user wants their virtual assistant to know. Every note goes
+// into the assistant's context when that user emails or chats with it.
+// ---------------------------------------------------------------------------
+const NOTE_MAX_CHARS = 10_000;
+const NOTES_CONTEXT_CHARS = 40_000;
+
+function getAllNotes() {
+  return readJson(NOTES_FILE, { notes: [] }).notes || [];
+}
+
+function saveAllNotes(notes) {
+  writeFileSync(NOTES_FILE, JSON.stringify({ notes }, null, 2));
+}
+
+// Newest first, so if the context budget runs out it's the oldest that drop.
+function notesFor(email) {
+  return getAllNotes()
+    .filter(n => n.ownerEmail === email.toLowerCase())
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+app.get('/api/notes', requireAuth, (req, res) => {
+  res.json({ notes: notesFor(req.user.email), maxChars: NOTE_MAX_CHARS });
+});
+
+app.post('/api/notes', requireAuth, (req, res) => {
+  const title = req.body.title?.trim() || '';
+  const body = req.body.body?.trim() || '';
+  if (!body) return res.status(400).json({ error: 'Write something in the note' });
+  if (body.length > NOTE_MAX_CHARS) {
+    return res.status(400).json({ error: `Keep a note under ${NOTE_MAX_CHARS.toLocaleString()} characters` });
+  }
+  const now = new Date().toISOString();
+  const note = {
+    id: generateId('note'),
+    ownerEmail: req.user.email.toLowerCase(),
+    title: title.slice(0, 200),
+    body,
+    createdAt: now,
+    updatedAt: now,
+  };
+  saveAllNotes([...getAllNotes(), note]);
+  res.json(note);
+});
+
+app.put('/api/notes/:id', requireAuth, (req, res) => {
+  const all = getAllNotes();
+  const index = all.findIndex(n => n.id === req.params.id && n.ownerEmail === req.user.email.toLowerCase());
+  if (index < 0) return res.status(404).json({ error: 'Note not found' });
+  const body = req.body.body !== undefined ? String(req.body.body).trim() : all[index].body;
+  if (!body) return res.status(400).json({ error: 'Write something in the note' });
+  if (body.length > NOTE_MAX_CHARS) {
+    return res.status(400).json({ error: `Keep a note under ${NOTE_MAX_CHARS.toLocaleString()} characters` });
+  }
+  all[index] = {
+    ...all[index],
+    title: req.body.title !== undefined ? String(req.body.title).trim().slice(0, 200) : all[index].title,
+    body,
+    updatedAt: new Date().toISOString(),
+  };
+  saveAllNotes(all);
+  res.json(all[index]);
+});
+
+app.delete('/api/notes/:id', requireAuth, (req, res) => {
+  const all = getAllNotes();
+  const mine = all.some(n => n.id === req.params.id && n.ownerEmail === req.user.email.toLowerCase());
+  if (!mine) return res.status(404).json({ error: 'Note not found' });
+  saveAllNotes(all.filter(n => n.id !== req.params.id));
+  res.json({ success: true });
+});
 
 const assistantDeps = {
   findUser,
@@ -2278,6 +2373,154 @@ app.post('/api/virtual-assistants/:id/check', requireAuth, async (req, res) => {
     res.json({ result, assistant: publicAssistant(fresh) });
   } catch (err) {
     res.status(502).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Chat with your virtual assistant — the same prompt and context as email, so
+// a chat answer is what the assistant would have emailed back.
+// ---------------------------------------------------------------------------
+function getChatSessions() {
+  return readJson(CHAT_SESSIONS_FILE, { sessions: [] }).sessions || [];
+}
+
+function saveChatSessions(sessions) {
+  writeFileSync(CHAT_SESSIONS_FILE, JSON.stringify({ sessions }, null, 2));
+}
+
+// The assistants a user may talk to: those serving their own email domain —
+// the same people who could email them.
+function assistantsForUser(email) {
+  const domain = email.split('@')[1]?.toLowerCase();
+  return getAssistants().filter(a => a.ownerDomain === domain);
+}
+
+function chatAssistantSummary(assistant) {
+  return {
+    id: assistant.id,
+    firstName: assistant.firstName,
+    lastName: assistant.lastName,
+    email: assistant.email,
+  };
+}
+
+function sessionSummary(session) {
+  const { messages, ...rest } = session;
+  return { ...rest, messageCount: messages.length };
+}
+
+function findOwnSession(req) {
+  return getChatSessions().find(
+    s => s.id === req.params.id && s.ownerEmail === req.user.email.toLowerCase()
+  );
+}
+
+app.get('/api/chat/assistants', requireAuth, (req, res) => {
+  res.json({ assistants: assistantsForUser(req.user.email).map(chatAssistantSummary) });
+});
+
+app.get('/api/chat/sessions', requireAuth, (req, res) => {
+  const sessions = getChatSessions()
+    .filter(s => s.ownerEmail === req.user.email.toLowerCase())
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map(sessionSummary);
+  res.json({ sessions });
+});
+
+app.post('/api/chat/sessions', requireAuth, (req, res) => {
+  const available = assistantsForUser(req.user.email);
+  const assistant = available.find(a => a.id === req.body.assistantId) || available[0];
+  if (!assistant) {
+    return res.status(409).json({
+      error: 'No virtual assistant is set up for your domain yet. An admin can add one on the Administration page.',
+    });
+  }
+  const now = new Date().toISOString();
+  const session = {
+    id: generateId('chat'),
+    ownerEmail: req.user.email.toLowerCase(),
+    assistantId: assistant.id,
+    assistantName: `${assistant.firstName} ${assistant.lastName}`.trim(),
+    title: 'New chat',
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  saveChatSessions([...getChatSessions(), session]);
+  res.json(session);
+});
+
+app.get('/api/chat/sessions/:id', requireAuth, (req, res) => {
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  res.json(session);
+});
+
+app.delete('/api/chat/sessions/:id', requireAuth, (req, res) => {
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  saveChatSessions(getChatSessions().filter(s => s.id !== session.id));
+  res.json({ success: true });
+});
+
+app.post('/api/chat/sessions/:id/messages', requireAuth, async (req, res) => {
+  const content = req.body.content?.trim();
+  if (!content) return res.status(400).json({ error: 'Write a message' });
+  if (content.length > 20_000) return res.status(400).json({ error: 'That message is too long' });
+
+  const session = findOwnSession(req);
+  if (!session) return res.status(404).json({ error: 'Chat not found' });
+  const assistant = assistantsForUser(req.user.email).find(a => a.id === session.assistantId);
+  if (!assistant) {
+    return res.status(409).json({ error: 'This chat\'s virtual assistant no longer exists. Start a new chat.' });
+  }
+
+  const keyInfo = anthropicKeyFor(req.user.email);
+  if (!keyInfo.key) {
+    return res.status(501).json({
+      error: 'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.',
+    });
+  }
+
+  try {
+    let senderContext = null;
+    try {
+      senderContext = await assistantSenderContext(req.user.email);
+    } catch (err) {
+      console.error(`[chat] context for ${req.user.email} failed:`, err.message);
+    }
+    const user = findUser(req.user.email);
+    const reply = await writeReply({
+      assistant,
+      sender: { email: req.user.email.toLowerCase(), name: user?.name || req.user.name || '' },
+      subject: session.title === 'New chat' ? content.slice(0, 80) : session.title,
+      body: content,
+      history: session.messages,
+      senderContext,
+      keyInfo,
+      feature: 'assistant-chat',
+    });
+
+    // Re-read before writing: another tab may have touched the sessions file.
+    const all = getChatSessions();
+    const index = all.findIndex(s => s.id === session.id);
+    if (index < 0) return res.status(404).json({ error: 'Chat was deleted' });
+    const now = new Date().toISOString();
+    all[index] = {
+      ...all[index],
+      title: all[index].title === 'New chat' ? content.replace(/\s+/g, ' ').slice(0, 60) : all[index].title,
+      messages: [
+        ...all[index].messages,
+        { role: 'user', content, at: now },
+        { role: 'assistant', content: reply, at: new Date().toISOString() },
+      ],
+      updatedAt: now,
+    };
+    saveChatSessions(all);
+    res.json(all[index]);
+  } catch (err) {
+    console.error('[chat] reply failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
   }
 });
 

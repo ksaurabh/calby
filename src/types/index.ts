@@ -35,6 +35,41 @@ export interface VirtualAssistant {
   activity: VirtualAssistantActivity[];
 }
 
+export interface Note {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatAssistant {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+}
+
+export interface AssistantChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  at: string;
+}
+
+export interface AssistantChatSummary {
+  id: string;
+  assistantId: string;
+  assistantName: string;
+  title: string;
+  messageCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AssistantChatSession extends Omit<AssistantChatSummary, 'messageCount'> {
+  messages: AssistantChatMessage[];
+}
+
 export interface Org {
   id: string;
   name: string;
