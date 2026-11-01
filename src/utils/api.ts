@@ -231,6 +231,10 @@ export const api = {
       explained: boolean;
       fixableByGuidance: boolean;
       suggestion: GuidanceSuggestion | null;
+      guidance: string;
+      draft: boolean;
+      readAs: string;
+      calendarFetchedAt: string;
     }>(`/api/event-types/${eventTypeId}/slot-explanation`, {
       method: 'POST',
       body: JSON.stringify({ start, durationMinutes, guidance }),

@@ -541,14 +541,22 @@ async function calendarSnapshot(email, refreshToken, from, to, { withEvents = tr
         : null,
     };
   }
+  // Windows run from "now", so each later request ends a little later. Reading
+  // a day past the end keeps this copy covering them for its whole lifetime.
+  const readTo = new Date(to.getTime() + 86400_000);
   const token = await accessTokenFor(email, refreshToken);
   const [busy, events] = await Promise.all([
-    fetchBusy(token, from, to),
-    withEvents ? fetchEvents(token, from, to) : Promise.resolve(null),
+    fetchBusy(token, from, readTo),
+    withEvents ? fetchEvents(token, from, readTo) : Promise.resolve(null),
   ]);
   const fetchedAt = Date.now();
-  calendarSnapshots.set(key, { fetchedAt, from, to, busy, events });
-  return { fromCache: false, fetchedAt, busy, events };
+  calendarSnapshots.set(key, { fetchedAt, from, to: readTo, busy, events });
+  return {
+    fromCache: false,
+    fetchedAt,
+    busy: busy.filter(b => b.end > from && b.start < to),
+    events: events ? events.filter(e => new Date(e.end) > from && new Date(e.start) < to) : null,
+  };
 }
 
 const clockTime = ms => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -1545,8 +1553,8 @@ app.post('/api/event-types/:id/suggest-slots', requireAuth, async (req, res) => 
   const to = Math.min(30, Math.max(from, Number(req.body.toBusinessDay) || from));
   try {
     const { target } = await previewTarget(req, eventType, req.body.guidance);
-    const durationMinutes = resolveDuration(target, req.body.durationMinutes);
-    if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+    // A draft may offer different lengths; fall back to its default.
+    const durationMinutes = resolveDuration(target, req.body.durationMinutes) || target.rules.durationMinutes;
     const availability = await availabilityFor(target, {
       durationMinutes,
       review: 'cached',
@@ -1586,9 +1594,9 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
   }
   try {
     // Explain against what the preview is showing: draft guidance included.
-    const { target } = await previewTarget(req, eventType, req.body.guidance);
-    const durationMinutes = resolveDuration(target, req.body.durationMinutes);
-    if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+    const { target, draft } = await previewTarget(req, eventType, req.body.guidance);
+    // Edited guidance may offer different lengths; fall back to its default.
+    const durationMinutes = resolveDuration(target, req.body.durationMinutes) || target.rules.durationMinutes;
 
     // Reuse exactly what the availability computation decided. Times on the slot
     // grid already have a verdict; anything else (a click between slots, outside
@@ -1672,6 +1680,11 @@ app.post('/api/event-types/:id/slot-explanation', requireAuth, async (req, res) 
       // Whether any of the reasons are down to the guidance at all.
       fixableByGuidance: fixable,
       suggestion,
+      // What this was checked against.
+      guidance: target.guidance,
+      draft,
+      readAs: target.rules.summary || '',
+      calendarFetchedAt: new Date(availability.calendarFetchedAt).toISOString(),
     });
   } catch (err) {
     console.error('[slot-explanation] failed:', err.message);

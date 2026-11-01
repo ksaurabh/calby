@@ -58,7 +58,13 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     explanation: string;
     fixableByGuidance: boolean;
     suggestion: GuidanceSuggestion | null;
+    guidance: string;
+    draft: boolean;
+    readAs: string;
+    calendarFetchedAt: string;
   } | null>(null);
+  // Guidance edited inside the explanation dialog, checked against this one time.
+  const [checkGuidance, setCheckGuidance] = useState('');
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [pageOffset, setPageOffset] = useState(0);
   // What the server is doing while the availability loads.
@@ -160,12 +166,12 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     }
   };
 
-  // Put a suggested guidance in the editor and preview it (unsaved).
-  const trySuggestion = (suggestion: GuidanceSuggestion) => {
+  // Put guidance in the page's editor and preview it there (unsaved).
+  const previewGuidance = (guidance: string) => {
     setShowAnswer(false);
     setNotice(null);
-    setGuidanceText(suggestion.guidance);
-    load({ durationMinutes: availability?.durationMinutes, guidance: suggestion.guidance });
+    setGuidanceText(guidance);
+    load({ durationMinutes: availability?.durationMinutes, guidance });
   };
 
   const discardDraft = () => {
@@ -184,19 +190,18 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
     setShowAnswer(false);
   };
 
-  const explainPicked = async () => {
-    if (!picked) return;
+  // Explain the picked time — under the guidance on the page, or, from the
+  // dialog's "Check again", under guidance edited there. Either way it is
+  // checked against the cached calendar; nothing is saved.
+  const explainPicked = async (guidance?: string) => {
+    if (!picked || !availability) return;
+    const checking = guidance ?? availability.guidance;
+    if (guidance === undefined) setCheckGuidance(checking);
     setShowAnswer(true);
     setAsking(true);
-    setAnswer(null);
     setAnswerError(null);
     try {
-      setAnswer(await api.explainSlot(
-        eventTypeId,
-        picked,
-        availability?.durationMinutes || 30,
-        availability?.draft ? availability.guidance : undefined
-      ));
+      setAnswer(await api.explainSlot(eventTypeId, picked, availability.durationMinutes || 30, checking));
     } catch (e) {
       setAnswerError((e as Error).message);
     } finally {
@@ -408,7 +413,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
                 <span className="text-gray-400 font-normal"> · {availability.durationMinutes} min</span>
               </div>
               <div className="flex gap-1">
-                <Button className="!px-2.5 !py-1 text-xs" onClick={explainPicked}>Explain this slot</Button>
+                <Button className="!px-2.5 !py-1 text-xs" onClick={() => explainPicked()}>Explain this slot</Button>
                 <Button
                   variant="secondary"
                   className="!px-2.5 !py-1 text-xs"
@@ -430,75 +435,127 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         isOpen={showAnswer}
         onClose={() => setShowAnswer(false)}
         title={picked ? formatDateTime(picked, rules.timezone) : ''}
+        size="wide"
       >
-        {answerError ? (
-          <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>
-        ) : asking || !answer ? (
-          <div className="py-8 flex items-center justify-center gap-3 text-sm text-gray-500">
-            <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
-            Working out why…
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <span
-              className={`inline-block text-xs px-2 py-0.5 rounded-full ${
-                answer.open ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
-              }`}
-            >
-              {answer.open ? 'Bookable' : 'Not offered'}
-            </span>
-            <p className="text-sm text-gray-800">{answer.explanation}</p>
-            {answer.reasons.length > 0 && (
-              <ul className="space-y-1 text-xs text-gray-500 border-t border-gray-100 pt-3">
-                {answer.reasons.map((reason, index) => (
-                  <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
-                ))}
-              </ul>
-            )}
-
-            {!answer.open && answer.suggestion && (
-              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2">
-                <div className="text-sm font-medium text-gray-900">To offer this time, change your guidance to:</div>
-                <pre className="whitespace-pre-wrap break-words font-sans text-sm text-gray-800 bg-white border border-gray-200 rounded-md p-2">
-                  {answer.suggestion.guidance}
-                </pre>
-                {answer.suggestion.change && (
-                  <p className="text-xs text-gray-600">{answer.suggestion.change}</p>
-                )}
-                <p
-                  className={`text-xs ${
-                    answer.suggestion.opensSlot
-                      ? 'text-emerald-700'
-                      : answer.suggestion.verified
-                        ? 'text-amber-700'
-                        : 'text-red-700'
+        <div className="space-y-4">
+          {/* The verdict for the guidance last checked. */}
+          {answerError ? (
+            <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{answerError}</div>
+          ) : !answer ? (
+            <div className="py-8 flex items-center justify-center gap-3 text-sm text-gray-500">
+              <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600" />
+              Working out why…
+            </div>
+          ) : (
+            <div className={`space-y-3 ${asking ? 'opacity-50' : ''}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  className={`inline-block text-xs px-2 py-0.5 rounded-full ${
+                    answer.open ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-700'
                   }`}
                 >
-                  {answer.suggestion.opensSlot
-                    ? '✓ Checked: with this guidance, this time would be offered.'
-                    : answer.suggestion.verified
-                      ? `✓ The guidance would no longer block it, but it still wouldn't be offered: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`
-                      : `⚠ Checked, and this wouldn't be enough: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`}
-                </p>
-                {answer.suggestion.readAs && (
-                  <p className="text-xs text-gray-500">Would be read as: {answer.suggestion.readAs}</p>
+                  {answer.open ? 'Bookable' : 'Not offered'}
+                </span>
+                {answer.draft && (
+                  <span className="text-xs text-amber-700">with the edited guidance below (not saved)</span>
                 )}
-                <div className="flex justify-end">
-                  <Button onClick={() => trySuggestion(answer.suggestion!)}>Try this guidance</Button>
-                </div>
-                <p className="text-[11px] text-gray-400 text-right">
-                  Previews it here; your booking link changes only if you save.
-                </p>
               </div>
-            )}
-            {!answer.open && !answer.fixableByGuidance && (
-              <p className="text-xs text-gray-500 border-t border-gray-100 pt-3">
-                This time is blocked by your calendar, not by your guidance, so no change to the
-                guidance would open it.
+              <p className="text-sm text-gray-800">{answer.explanation}</p>
+              {answer.reasons.length > 0 && (
+                <ul className="space-y-1 text-xs text-gray-500 border-t border-gray-100 pt-3">
+                  {answer.reasons.map((reason, index) => (
+                    <li key={`${reason.code}-${index}`}>· {reason.detail}</li>
+                  ))}
+                </ul>
+              )}
+              {!answer.open && !answer.fixableByGuidance && (
+                <p className="text-xs text-gray-500">
+                  This time is blocked by your calendar, not by your guidance, so no change to the
+                  guidance would open it.
+                </p>
+              )}
+              {answer.open && answer.draft && answer.guidance !== availability.guidance && (
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-50 px-3 py-2">
+                  <span className="text-sm text-emerald-900">This guidance makes the time bookable.</span>
+                  <Button onClick={() => previewGuidance(answer.guidance)}>
+                    Preview it on the page
+                  </Button>
+                </div>
+              )}
+
+              {!answer.open && answer.suggestion && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-2">
+                  <div className="text-sm font-medium text-gray-900">To offer this time, change your guidance to:</div>
+                  <pre className="whitespace-pre-wrap break-words font-sans text-sm text-gray-800 bg-white border border-gray-200 rounded-md p-2">
+                    {answer.suggestion.guidance}
+                  </pre>
+                  {answer.suggestion.change && <p className="text-xs text-gray-600">{answer.suggestion.change}</p>}
+                  <p
+                    className={`text-xs ${
+                      answer.suggestion.opensSlot
+                        ? 'text-emerald-700'
+                        : answer.suggestion.verified
+                          ? 'text-amber-700'
+                          : 'text-red-700'
+                    }`}
+                  >
+                    {answer.suggestion.opensSlot
+                      ? '✓ Checked: with this guidance, this time would be offered.'
+                      : answer.suggestion.verified
+                        ? `✓ The guidance would no longer block it, but it still wouldn't be offered: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`
+                        : `⚠ Checked, and this wouldn't be enough: ${answer.suggestion.remainingReasons.map(r => r.detail).join(' ')}`}
+                  </p>
+                  {answer.suggestion.readAs && (
+                    <p className="text-xs text-gray-500">Would be read as: {answer.suggestion.readAs}</p>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" onClick={() => setCheckGuidance(answer.suggestion!.guidance)}>
+                      Edit it below
+                    </Button>
+                    <Button onClick={() => previewGuidance(answer.suggestion!.guidance)}>Try this guidance</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Edit the guidance and check this one time again. */}
+          <div className="border-t border-gray-200 pt-4">
+            <div className="flex items-baseline justify-between gap-3 mb-1">
+              <label htmlFor="check-guidance" className="text-sm font-medium text-gray-900">Guidance</label>
+              <span className="text-xs text-gray-500">Edit it and check this time again — nothing is saved</span>
+            </div>
+            <textarea
+              id="check-guidance"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm min-h-24 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+              value={checkGuidance}
+              onChange={e => setCheckGuidance(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && checkGuidance.trim() && !asking) {
+                  explainPicked(checkGuidance.trim());
+                }
+              }}
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button
+                onClick={() => explainPicked(checkGuidance.trim())}
+                disabled={asking || !checkGuidance.trim() || checkGuidance.trim() === answer?.guidance.trim()}
+              >
+                {asking ? 'Checking…' : 'Check again'}
+              </Button>
+              {answer && checkGuidance.trim() !== answer.guidance.trim() && !asking && (
+                <span className="text-xs text-gray-500">Edited · ⌘/Ctrl+Enter to check</span>
+              )}
+            </div>
+            {answer && (
+              <p className="mt-2 text-xs text-gray-400">
+                Checked against your calendar as read at{' '}
+                {new Date(answer.calendarFetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}{' '}
+                (cached){answer.readAs ? ` · guidance read as: ${answer.readAs}` : ''}
               </p>
             )}
           </div>
-        )}
+        </div>
       </Modal>
     </div>
   );
