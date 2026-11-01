@@ -29,7 +29,7 @@ import {
   slotIsAvailable,
   slotsInBusinessDays,
 } from './scheduling.js';
-import { usageEntries } from './llm.js';
+import { costOf, priceFor, usageEntries } from './llm.js';
 import {
   cacheReport,
   cacheSlotReview,
@@ -2659,8 +2659,25 @@ app.get('/api/chat/sessions/:id/messages/:index/trace', requireAuth, (req, res) 
   if (!entry.trace) {
     return res.status(404).json({ error: 'This response was generated before traces were recorded.' });
   }
-  res.json({ version, ...entry.trace });
+  res.json({ version, ...entry.trace, cost: traceCost(entry.trace) });
 });
+
+// What one call cost, priced exactly as the usage log prices it (Settings ›
+// cost), with each kind of token shown separately.
+function traceCost(trace) {
+  const model = trace.response?.model || trace.request?.model;
+  const usage = trace.response?.usage || {};
+  const part = (key) => costOf(model, { [key]: usage[key] || 0 });
+  return {
+    model,
+    pricePerMillion: priceFor(model),
+    inputUsd: part('input_tokens'),
+    outputUsd: part('output_tokens'),
+    cacheWriteUsd: part('cache_creation_input_tokens'),
+    cacheReadUsd: part('cache_read_input_tokens'),
+    totalUsd: costOf(model, usage),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Health check

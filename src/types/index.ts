@@ -84,6 +84,15 @@ export interface LlmTrace {
     usage: Record<string, unknown>;
     content: unknown[];
   };
+  cost: {
+    model: string;
+    pricePerMillion: { input: number; output: number };
+    inputUsd: number;
+    outputUsd: number;
+    cacheWriteUsd: number;
+    cacheReadUsd: number;
+    totalUsd: number;
+  };
 }
 
 export interface AssistantChatSummary {

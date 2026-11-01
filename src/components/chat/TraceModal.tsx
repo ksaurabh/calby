@@ -52,6 +52,10 @@ export function TraceModal({ sessionId, index, version, onClose }: TraceModalPro
 
   const usage = trace?.response.usage || {};
   const n = (key: string) => Number(usage[key] || 0).toLocaleString();
+  const usd = (value: number) =>
+    value === 0 ? '$0' : value < 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(3)}`;
+  const cost = trace?.cost;
+  const cached = Number(usage.cache_read_input_tokens || 0) + Number(usage.cache_creation_input_tokens || 0) > 0;
 
   return (
     <Modal isOpen onClose={onClose} title={`Full trace — version ${version + 1}`} size="full">
@@ -69,6 +73,26 @@ export function TraceModal({ sessionId, index, version, onClose }: TraceModalPro
             <div><dt className="text-xs text-gray-500">Stop reason</dt><dd className="font-mono">{trace.response.stop_reason}</dd></div>
             <div><dt className="text-xs text-gray-500">API key</dt><dd>{trace.keySource || '—'}</dd></div>
           </dl>
+
+          {cost && (
+            <div className="rounded-lg border border-gray-200 p-4 flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm">
+              <div>
+                <span className="text-xs text-gray-500 mr-2">Cost of this call</span>
+                <span className="text-xl font-semibold text-gray-900">{usd(cost.totalUsd)}</span>
+              </div>
+              <div className="text-gray-600">
+                input {usd(cost.inputUsd)} <span className="text-gray-400">({n('input_tokens')} × ${cost.pricePerMillion.input}/M)</span>
+              </div>
+              <div className="text-gray-600">
+                output {usd(cost.outputUsd)} <span className="text-gray-400">({n('output_tokens')} × ${cost.pricePerMillion.output}/M)</span>
+              </div>
+              {cached && (
+                <div className="text-gray-600">
+                  cache write {usd(cost.cacheWriteUsd)} ({n('cache_creation_input_tokens')}) · cache read {usd(cost.cacheReadUsd)} ({n('cache_read_input_tokens')})
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="flex items-center justify-between">
             <h3 className="font-semibold text-gray-900">Request sent to the model</h3>
