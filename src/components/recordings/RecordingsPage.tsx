@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { AttendedMeeting, IgnoreRule, Recording, RecordingSource } from '../../types';
+import type { AttendedMeeting, IgnoreRule, Recording, RecordingSource, RecordingSourceName } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, ProgressSteps } from '../common';
@@ -7,11 +7,19 @@ import type { ProgressStep } from '../common/ProgressSteps';
 
 type Data = Awaited<ReturnType<typeof api.recordings>>;
 
-const SOURCE_STYLE: Record<'avoma' | 'gong', string> = {
+const SOURCE_STYLE: Record<RecordingSourceName, string> = {
   avoma: 'bg-violet-50 text-violet-700 border-violet-200',
   gong: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  zoom: 'bg-sky-50 text-sky-700 border-sky-200',
 };
-const SOURCE_LABEL = { avoma: 'Avoma', gong: 'Gong' };
+const SOURCE_LABEL: Record<RecordingSourceName, string> = { avoma: 'Avoma', gong: 'Gong', zoom: 'Zoom' };
+
+function matchNote(how?: 'meeting number' | 'time', deltaMinutes?: number) {
+  if (!how) return '';
+  return how === 'meeting number'
+    ? `matched by Zoom meeting number${deltaMinutes ? `, started ${deltaMinutes} min apart` : ''}`
+    : `matched by time — started ${deltaMinutes ? `${deltaMinutes} min apart` : 'at the same minute'}`;
+}
 
 function when(iso: string | null, timeZone: string) {
   if (!iso) return '—';
@@ -42,7 +50,7 @@ function ruleLabel(rule: IgnoreRule) {
     : `every meeting titled "${rule.title || rule.value}"`;
 }
 
-function SourceBadge({ source }: { source: 'avoma' | 'gong' }) {
+function SourceBadge({ source }: { source: RecordingSourceName }) {
   return (
     <span className={`inline-block text-[11px] px-1.5 py-0.5 rounded border ${SOURCE_STYLE[source]}`}>
       {SOURCE_LABEL[source]}
@@ -81,7 +89,13 @@ function MeetingsTable({ meetings, timezone, showRecordings, actions }: {
             {showRecordings && (
               <td className="px-4 py-2 space-x-1 whitespace-nowrap">
                 {m.recordings.map(r => (
-                  <a key={`${r.source}-${r.id}`} href={r.url} target="_blank" rel="noreferrer" title={r.title}>
+                  <a
+                    key={`${r.source}-${r.id}`}
+                    href={r.url || undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={[r.title, matchNote(r.how, r.deltaMinutes)].filter(Boolean).join(' · ')}
+                  >
                     <SourceBadge source={r.source} />
                   </a>
                 ))}
@@ -149,6 +163,74 @@ function RecordingsTable({ label, source, data, timezone }: {
                     <td className="px-4 py-2">
                       <People people={m.attendees} max={5} />
                       <span className="text-xs text-gray-400"> · {m.attendees.length}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function ZoomTable({ source, timezone, days }: { source: RecordingSource; timezone: string; days: number }) {
+  const [open, setOpen] = useState(true);
+  const unmatched = source.meetings.filter(m => !m.matchedMeeting).length;
+  return (
+    <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <button
+        className="w-full px-5 py-3 flex items-center justify-between text-left hover:bg-gray-50"
+        onClick={() => setOpen(o => !o)}
+      >
+        <div>
+          <h2 className="font-semibold text-gray-900">
+            Zoom {source.connected && <span className="text-gray-400 font-normal">({source.meetings.length})</span>}
+          </h2>
+          <p className="text-xs text-gray-500">
+            {!source.connected
+              ? 'Not connected — add your Zoom app credentials in Settings.'
+              : `Cloud recordings of ${source.userEmail}, last ${days} days. Zoom gives no attendee list, so each ` +
+                'is matched to a meeting by start time (within 10 min), or by Zoom meeting number when the invite has the link.' +
+                (unmatched ? ` ${unmatched} matched no meeting.` : '')}
+          </p>
+        </div>
+        <span className="text-gray-400 text-sm">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && source.connected && (
+        <>
+          {source.error && <div className="mx-5 mb-3 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{source.error}</div>}
+          {!source.error && source.meetings.length === 0 ? (
+            <p className="px-5 pb-4 text-sm text-gray-500">No cloud recordings in this window.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-4 py-2 font-medium w-44">Recorded</th>
+                  <th className="px-4 py-2 font-medium">Topic</th>
+                  <th className="px-4 py-2 font-medium w-20">Length</th>
+                  <th className="px-4 py-2 font-medium">Calendar meeting</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {source.meetings.map((r: Recording) => (
+                  <tr key={r.id} className="align-top">
+                    <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{when(r.start, timezone)}</td>
+                    <td className="px-4 py-2 text-gray-900">
+                      {r.url ? <a href={r.url} target="_blank" rel="noreferrer" className="hover:underline">{r.title}</a> : r.title}
+                    </td>
+                    <td className="px-4 py-2 text-gray-600">{r.durationMin ? `${r.durationMin} min` : '—'}</td>
+                    <td className="px-4 py-2">
+                      {r.matchedMeeting ? (
+                        <>
+                          <span className="text-gray-900">{r.matchedMeeting.title}</span>
+                          <span className="text-gray-400"> · {when(r.matchedMeeting.start, timezone)}</span>
+                          <div className="text-xs text-gray-500">{matchNote(r.matchedMeeting.how, r.matchedMeeting.deltaMinutes)}</div>
+                        </>
+                      ) : (
+                        <span className="text-amber-700">No calendar meeting with other attendees at that time</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -313,7 +395,7 @@ export function RecordingsPage() {
   };
 
   const tz = data?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const nothingConnected = data && !data.avoma.connected && !data.gong.connected;
+  const nothingConnected = data && !data.avoma.connected && !data.gong.connected && !data.zoom.connected;
 
   return (
     <div className="space-y-6">
@@ -321,8 +403,8 @@ export function RecordingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Recordings</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Meetings recorded in Avoma and Gong, and the meetings on your calendar that had people
-            in them but no recording.
+            Meetings recorded in Avoma, Gong and Zoom, and the meetings on your calendar that had
+            people in them but no recording.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -365,7 +447,7 @@ export function RecordingsPage() {
 
       {nothingConnected && (
         <div className="rounded-lg bg-amber-50 text-amber-900 px-4 py-3 text-sm">
-          You haven't connected Avoma or Gong yet.{' '}
+          You haven't connected Avoma, Gong or Zoom yet.{' '}
           <button className="underline" onClick={() => navigate('/settings')}>Add your API keys in Settings</button>.
         </div>
       )}
@@ -385,7 +467,8 @@ export function RecordingsPage() {
               </h2>
               <p className="text-xs text-gray-500">
                 Meetings on your calendar in the last {data.days} days that had other attendees, weren't
-                declined, and have no Avoma or Gong recording starting within 10 minutes with a shared attendee.
+                declined, and have no recording: Avoma or Gong starting within 10 minutes with a shared attendee,
+                or Zoom matched by time or meeting number.
               </p>
             </div>
             {!data.calendar.connected ? (
@@ -395,7 +478,7 @@ export function RecordingsPage() {
             ) : data.calendar.error ? (
               <div className="mx-5 mb-4 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{data.calendar.error}</div>
             ) : nothingConnected ? (
-              <p className="px-5 pb-4 text-sm text-gray-500">Connect Avoma or Gong to check for recordings.</p>
+              <p className="px-5 pb-4 text-sm text-gray-500">Connect Avoma, Gong or Zoom to check for recordings.</p>
             ) : data.calendar.unrecorded.length === 0 ? (
               <p className="px-5 pb-4 text-sm text-emerald-700">
                 {data.calendar.ignored.length
@@ -434,9 +517,10 @@ export function RecordingsPage() {
                 )}
               />
             )}
-            {(data.avoma.error || data.gong.error) && data.calendar.unrecorded.length > 0 && (
+            {(data.avoma.error || data.gong.error || data.zoom.error) && data.calendar.unrecorded.length > 0 && (
               <p className="px-5 py-2 text-xs text-amber-700 border-t border-gray-100">
-                {data.avoma.error ? 'Avoma' : 'Gong'} could not be read, so some of these may have a recording there.
+                {[data.avoma.error && 'Avoma', data.gong.error && 'Gong', data.zoom.error && 'Zoom'].filter(Boolean).join(' and ')}
+                {' '}could not be read, so some of these may have a recording there.
               </p>
             )}
           </section>
@@ -467,6 +551,7 @@ export function RecordingsPage() {
 
           <RecordingsTable label="Avoma" source={data.avoma} data={data} timezone={tz} />
           <RecordingsTable label="Gong" source={data.gong} data={data} timezone={tz} />
+          <ZoomTable source={data.zoom} timezone={tz} days={data.days} />
 
           {(data.calendar.ignored.length > 0 || data.ignoreRules.length > 0) && (
             <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">

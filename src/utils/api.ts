@@ -301,22 +301,28 @@ export const api = {
 
   // Your own Avoma and Gong connections
   integrations: () =>
-    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/integrations'),
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>('/api/settings/integrations'),
 
   setAvoma: (apiKey: string) =>
-    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/avoma', {
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>('/api/settings/avoma', {
       method: 'PUT',
       body: JSON.stringify({ apiKey }),
     }),
 
   setGong: (accessKey: string, secretKey: string) =>
-    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>('/api/settings/gong', {
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>('/api/settings/gong', {
       method: 'PUT',
       body: JSON.stringify({ accessKey, secretKey }),
     }),
 
-  removeIntegration: (service: 'avoma' | 'gong') =>
-    request<{ avoma: IntegrationStatus; gong: IntegrationStatus }>(`/api/settings/${service}`, { method: 'DELETE' }),
+  setZoom: (creds: { accountId: string; clientId: string; clientSecret: string; userEmail: string }) =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>('/api/settings/zoom', {
+      method: 'PUT',
+      body: JSON.stringify(creds),
+    }),
+
+  removeIntegration: (service: 'avoma' | 'gong' | 'zoom') =>
+    request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>(`/api/settings/${service}`, { method: 'DELETE' }),
 
   // Recordings from Avoma and Gong, and calendar meetings without one
   recordings: (options: { days: number; scope: 'me' | 'all'; refresh?: boolean }, progressId?: string) =>
@@ -329,6 +335,7 @@ export const api = {
       timezone: string;
       avoma: RecordingSource;
       gong: RecordingSource;
+      zoom: RecordingSource;
       calendar: {
         connected: boolean;
         error: string | null;

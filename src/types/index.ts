@@ -126,11 +126,15 @@ export interface IntegrationStatus {
   connected: boolean;
   hint?: string;
   setAt?: string | null;
+  /** Zoom: whose recordings are listed. */
+  userEmail?: string;
 }
+
+export type RecordingSourceName = 'avoma' | 'gong' | 'zoom';
 
 /** A meeting recording from Avoma or Gong. */
 export interface Recording {
-  source: 'avoma' | 'gong';
+  source: RecordingSourceName;
   id: string;
   title: string;
   start: string | null;
@@ -138,6 +142,11 @@ export interface Recording {
   url: string;
   organizer: string;
   attendees: { email: string; name: string; affiliation?: string }[];
+  /** Zoom only. */
+  meetingNumber?: string | null;
+  durationMin?: number | null;
+  /** Zoom only: the calendar meeting this recording was tied to, and how. */
+  matchedMeeting?: { id: string; title: string; start: string; how: 'meeting number' | 'time'; deltaMinutes: number } | null;
 }
 
 /** A calendar meeting that had other people in it, and its recordings. */
@@ -148,7 +157,16 @@ export interface AttendedMeeting {
   end: string;
   link: string | null;
   attendees: { email: string; name: string; responseStatus: string }[];
-  recordings: { source: 'avoma' | 'gong'; id: string; title: string; url: string; start: string | null }[];
+  recordings: {
+    source: RecordingSourceName;
+    id: string;
+    title: string;
+    url: string;
+    start: string | null;
+    /** Zoom only: matched by meeting number or by time. */
+    how?: 'meeting number' | 'time';
+    deltaMinutes?: number;
+  }[];
   /** The recurring series this is an instance of, if any. */
   recurringEventId: string | null;
   /** Set when you've chosen to ignore it: just this one, or by an "always" rule. */
@@ -166,6 +184,8 @@ export interface IgnoreRule {
 
 export interface RecordingSource {
   connected: boolean;
+  /** Zoom: whose recordings these are. */
+  userEmail?: string | null;
   meetings: Recording[];
   error: string | null;
   truncated: boolean;

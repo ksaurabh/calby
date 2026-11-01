@@ -4,16 +4,16 @@ import { api } from '../../utils/api';
 import { formatDate } from '../../utils/format';
 import { Button } from '../common';
 
-type Statuses = { avoma: IntegrationStatus; gong: IntegrationStatus };
+type Statuses = { avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus };
 
 const inputClass =
   'flex-1 min-w-48 rounded-lg border border-gray-300 px-3 py-2 text-sm font-mono focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
 
 interface ServiceConfig {
-  key: 'avoma' | 'gong';
+  key: 'avoma' | 'gong' | 'zoom';
   label: string;
   where: string;
-  fields: { name: string; placeholder: string }[];
+  fields: { name: string; placeholder: string; optional?: boolean; plain?: boolean }[];
 }
 
 const SERVICES: ServiceConfig[] = [
@@ -30,6 +30,17 @@ const SERVICES: ServiceConfig[] = [
     fields: [
       { name: 'Access key', placeholder: 'Access key' },
       { name: 'Secret', placeholder: 'Access key secret' },
+    ],
+  },
+  {
+    key: 'zoom',
+    label: 'Zoom',
+    where: 'Zoom App Marketplace → Develop → Build app → Server-to-Server OAuth, with the scope "View all user recordings" (cloud_recording:read:list_user_recordings:admin); copy the account ID, client ID and secret, and activate the app.',
+    fields: [
+      { name: 'Account ID', placeholder: 'Account ID' },
+      { name: 'Client ID', placeholder: 'Client ID' },
+      { name: 'Client secret', placeholder: 'Client secret' },
+      { name: 'Zoom user email', placeholder: 'Zoom user email (defaults to yours)', optional: true, plain: true },
     ],
   },
 ];
@@ -49,8 +60,14 @@ function ServiceRow({ service, status, onChange }: {
     setBusy(true);
     setError(null);
     try {
-      const [first, second] = values.map(v => v.trim());
-      onChange(service.key === 'avoma' ? await api.setAvoma(first) : await api.setGong(first, second));
+      const [first, second, third, fourth] = values.map(v => v.trim());
+      onChange(
+        service.key === 'avoma'
+          ? await api.setAvoma(first)
+          : service.key === 'gong'
+            ? await api.setGong(first, second)
+            : await api.setZoom({ accountId: first, clientId: second, clientSecret: third, userEmail: fourth })
+      );
       setValues(service.fields.map(() => ''));
       setEditing(false);
     } catch (err) {
@@ -84,16 +101,16 @@ function ServiceRow({ service, status, onChange }: {
               <input
                 key={field.name}
                 className={inputClass}
-                type="password"
+                type={field.plain ? 'email' : 'password'}
                 placeholder={field.placeholder}
                 aria-label={field.name}
                 value={values[i]}
                 onChange={e => setValues(v => v.map((x, j) => (j === i ? e.target.value : x)))}
-                required
+                required={!field.optional}
                 autoFocus={i === 0}
               />
             ))}
-            <Button type="submit" disabled={busy || values.some(v => !v.trim())}>
+            <Button type="submit" disabled={busy || values.some((v, i) => !service.fields[i].optional && !v.trim())}>
               {busy ? 'Verifying…' : 'Connect'}
             </Button>
             <Button
@@ -115,6 +132,7 @@ function ServiceRow({ service, status, onChange }: {
             {status?.connected ? (
               <span className="text-gray-500">
                 {' '}· connected · <code className="font-mono text-xs">{status.hint}</code>
+                {status.userEmail && ` · recordings of ${status.userEmail}`}
                 {status.setAt && ` · since ${formatDate(status.setAt)}`}
               </span>
             ) : (
@@ -149,7 +167,7 @@ export function RecordingIntegrations() {
     <section className="bg-white rounded-xl border border-gray-200 p-6">
       <h2 className="font-semibold text-gray-900">Recording integrations</h2>
       <p className="text-sm text-gray-500 mt-1">
-        Your own Avoma and Gong API keys, used on the Recordings page to find each meeting's recording.
+        Your own Avoma, Gong and Zoom credentials, used on the Recordings page to find each meeting's recording.
         Only you use them.
       </p>
       {error && <div className="mt-3 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}

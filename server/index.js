@@ -51,7 +51,16 @@ import {
 } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 import { gmailConsentUrl, gmailProfile } from './gmail.js';
-import { avomaMeetings, avomaProbe, findRecordings, gongCalls, gongProbe } from './recordings.js';
+import {
+  avomaMeetings,
+  avomaProbe,
+  findRecordings,
+  gongCalls,
+  gongProbe,
+  matchZoomRecordings,
+  zoomProbe,
+  zoomRecordings,
+} from './recordings.js';
 import {
   checkAssistant,
   getAssistants,
@@ -367,13 +376,27 @@ function recordingCredsFor(email) {
     const secretKey = decryptSecret(user.gong.secretKey);
     if (accessKey && secretKey) gong = { accessKey, secretKey };
   }
-  return { avoma, gong };
+  let zoom = null;
+  if (user?.zoom?.clientId) {
+    const accountId = decryptSecret(user.zoom.accountId);
+    const clientId = decryptSecret(user.zoom.clientId);
+    const clientSecret = decryptSecret(user.zoom.clientSecret);
+    if (accountId && clientId && clientSecret) {
+      zoom = { accountId, clientId, clientSecret, userEmail: user.zoom.userEmail || email.toLowerCase() };
+    }
+  }
+  return { avoma, gong, zoom };
 }
 
 // What Settings shows about a connection: whether it's there, and a hint.
 function integrationStatus(entry) {
-  return entry?.apiKey || entry?.accessKey
-    ? { connected: true, hint: entry.hint || '••••', setAt: entry.setAt || null }
+  return entry?.apiKey || entry?.accessKey || entry?.clientId
+    ? {
+        connected: true,
+        hint: entry.hint || '••••',
+        setAt: entry.setAt || null,
+        ...(entry.userEmail ? { userEmail: entry.userEmail } : {}),
+      }
     : { connected: false };
 }
 
@@ -3149,7 +3172,11 @@ const lastFour = key => `…${key.slice(-4)}`;
 
 function userIntegrations(email) {
   const user = findUser(email);
-  return { avoma: integrationStatus(user?.avoma), gong: integrationStatus(user?.gong) };
+  return {
+    avoma: integrationStatus(user?.avoma),
+    gong: integrationStatus(user?.gong),
+    zoom: integrationStatus(user?.zoom),
+  };
 }
 
 app.get('/api/settings/integrations', requireAuth, (req, res) => {
@@ -3195,7 +3222,35 @@ app.put('/api/settings/gong', requireAuth, async (req, res) => {
   res.json(userIntegrations(req.user.email));
 });
 
-for (const service of ['avoma', 'gong']) {
+// Zoom: a Server-to-Server OAuth app's account ID, client ID and secret, and
+// which Zoom user's recordings to list (their Calby email unless they say).
+app.put('/api/settings/zoom', requireAuth, async (req, res) => {
+  if (!canSealSecrets()) return res.status(500).json({ error: 'Set SESSION_SECRET on the server before storing keys.' });
+  const accountId = req.body.accountId?.trim();
+  const clientId = req.body.clientId?.trim();
+  const clientSecret = req.body.clientSecret?.trim();
+  const userEmail = (req.body.userEmail?.trim() || req.user.email).toLowerCase();
+  if (!accountId || !clientId || !clientSecret) {
+    return res.status(400).json({ error: 'Paste the Zoom account ID, client ID and client secret' });
+  }
+  if (!EMAIL_RE.test(userEmail)) return res.status(400).json({ error: 'That Zoom user email is not valid' });
+  try {
+    await zoomProbe({ accountId, clientId, clientSecret, userEmail });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  saveUserIntegration(req.user.email, 'zoom', {
+    accountId: encryptSecret(accountId),
+    clientId: encryptSecret(clientId),
+    clientSecret: encryptSecret(clientSecret),
+    userEmail,
+    hint: lastFour(clientId),
+    setAt: new Date().toISOString(),
+  });
+  res.json(userIntegrations(req.user.email));
+});
+
+for (const service of ['avoma', 'gong', 'zoom']) {
   app.delete(`/api/settings/${service}`, requireAuth, (req, res) => {
     saveUserIntegration(req.user.email, service, null);
     res.json(userIntegrations(req.user.email));
@@ -3204,7 +3259,7 @@ for (const service of ['avoma', 'gong']) {
 
 async function recordingsFor(email, days, { refresh, progress }) {
   const creds = recordingCredsFor(email);
-  const key = `${email.toLowerCase()}:${days}:${creds.avoma ? 'a' : '-'}${creds.gong ? 'g' : '-'}`;
+  const key = `${email.toLowerCase()}:${days}:${creds.avoma ? 'a' : '-'}${creds.gong ? 'g' : '-'}${creds.zoom ? 'z' : '-'}`;
   const hit = recordingsCache.get(key);
   if (!refresh && hit && Date.now() - hit.fetchedAt < RECORDINGS_TTL) {
     progress(`Using recordings fetched at ${clockTime(hit.fetchedAt)} (cached)`);
@@ -3215,7 +3270,20 @@ async function recordingsFor(email, days, { refresh, progress }) {
 
   const avoma = { connected: !!creds.avoma, meetings: [], error: null, truncated: false };
   const gong = { connected: !!creds.gong, meetings: [], error: null, truncated: false };
+  const zoom = {
+    connected: !!creds.zoom, userEmail: creds.zoom?.userEmail || null, meetings: [], error: null, truncated: false,
+  };
   await Promise.all([
+    creds.zoom && (async () => {
+      progress('Asking Zoom for cloud recordings');
+      try {
+        const r = await zoomRecordings(creds.zoom, from, to, { onProgress: progress });
+        zoom.meetings = r.recordings;
+        zoom.truncated = r.truncated;
+      } catch (err) {
+        zoom.error = err.message;
+      }
+    })(),
     creds.avoma && (async () => {
       progress('Asking Avoma for meetings');
       try {
@@ -3238,9 +3306,9 @@ async function recordingsFor(email, days, { refresh, progress }) {
     })(),
   ]);
 
-  const result = { fetchedAt: Date.now(), from, to, avoma, gong };
+  const result = { fetchedAt: Date.now(), from, to, avoma, gong, zoom };
   // Don't hold on to a failure: the next load should try again.
-  if (!avoma.error && !gong.error) recordingsCache.set(key, result);
+  if (!avoma.error && !gong.error && !zoom.error) recordingsCache.set(key, result);
   return result;
 }
 
@@ -3353,6 +3421,7 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
               end: e.end,
               link: e.link,
               recurringEventId: e.recurringEventId || null,
+              zoomMeetingIds: e.zoomMeetingIds || [],
               organizer: e.organizer,
               attendees: e.attendees
                 .filter(a => !a.self && a.email !== email)
@@ -3365,6 +3434,30 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
         calendar.error = err.message;
       }
     }
+
+    // Zoom gives no participants, so its recordings are tied to meetings by
+    // time — or by Zoom meeting number, when the invite has the join link.
+    const zoomMatches = matchZoomRecordings(recordings.zoom.meetings, calendar.meetings);
+    const meetingsById = new Map(calendar.meetings.map(m => [m.id, m]));
+    for (const r of recordings.zoom.meetings) {
+      const match = zoomMatches.get(r.id);
+      const meeting = match && meetingsById.get(match.meetingId);
+      if (!meeting) continue;
+      meeting.recordings.push({
+        source: 'zoom', id: r.id, title: r.title, url: r.url, start: r.start,
+        how: match.how, deltaMinutes: match.deltaMinutes,
+      });
+    }
+    const zoomWithMatches = recordings.zoom.meetings.map(r => {
+      const match = zoomMatches.get(r.id);
+      const meeting = match && meetingsById.get(match.meetingId);
+      return {
+        ...r,
+        matchedMeeting: meeting
+          ? { id: meeting.id, title: meeting.title, start: meeting.start, how: match.how, deltaMinutes: match.deltaMinutes }
+          : null,
+      };
+    });
 
     progress('Done');
     const ignores = ignoresFor(email);
@@ -3383,6 +3476,11 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
       timezone: ownerTimezone(email),
       avoma: { ...recordings.avoma, meetings: visible(recordings.avoma.meetings) },
       gong: { ...recordings.gong, meetings: visible(recordings.gong.meetings) },
+      // Zoom recordings are all your own (you hosted them), whatever the filter.
+      zoom: {
+        ...recordings.zoom,
+        meetings: zoomWithMatches.sort((a, b) => String(b.start || '').localeCompare(String(a.start || ''))),
+      },
       calendar: {
         ...calendar,
         unrecorded: unrecorded.filter(m => !m.ignored),

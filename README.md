@@ -99,16 +99,20 @@ English, and share a booking link that writes real invites to your calendar.
   days a request needs, so unrelated requests carry no calendar at all. Every
   response can be regenerated, and its *Full trace* shows each model call in
   the loop exactly as sent, with tool calls, tool results and cost.
-- **Recordings (Avoma and Gong).** Each user connects their own Avoma API key
-  and Gong access key + secret in Settings (each verified with the service,
-  stored encrypted on their user record, never sent back to a browser). The
-  *Recordings* page lists the last 7/14/30 days of Avoma meetings and Gong calls
-  with their attendees — the ones you were in, or everything your keys can see —
-  and the meetings on your calendar that had other attendees but no recording. A
-  meeting counts as recorded when an Avoma or Gong recording starts within 10
-  minutes of it and shares an attendee other than you (by email, or full name
-  when the recording has none). Pulls are kept for 5 minutes per user, since
-  both services rate-limit; the clients retry 429s honouring the wait asked for.
+- **Recordings (Avoma, Gong and Zoom).** Each user connects their own
+  credentials in Settings (each verified with the service, stored encrypted on
+  their user record, never sent back to a browser): an Avoma API key, a Gong
+  access key + secret, and/or a Zoom Server-to-Server OAuth app (account ID,
+  client ID, secret, with the "View all user recordings" scope) plus which Zoom
+  user's recordings to list. The *Recordings* page lists the last 7/14/30 days
+  of recordings and the meetings on your calendar that had other attendees but
+  no recording. Avoma and Gong recordings match a meeting when they start
+  within 10 minutes and share an attendee other than you (by email, or full name
+  when there is no email). Zoom returns no attendees, so each Zoom recording is
+  tied to at most one meeting: one whose invite carries the same Zoom meeting
+  number (within 2 hours), else the nearest one starting within 10 minutes; the
+  Zoom section shows which meeting each recording matched and how. Pulls are
+  kept for 5 minutes per user; the clients retry rate limits.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

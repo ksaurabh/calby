@@ -294,3 +294,149 @@ export function findRecordings(meeting, recordings, ownerEmail) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Zoom (Server-to-Server OAuth app)
+// ---------------------------------------------------------------------------
+// The app's account ID, client ID and secret buy an hour-long access token.
+// Recordings are listed per Zoom user, by email; Zoom returns no participants
+// with them, so recordings are matched to meetings by time (and by Zoom
+// meeting number when the invite carries the join link).
+const ZOOM_API = 'https://api.zoom.us/v2';
+const ZOOM_MAX_ATTEMPTS = 4;
+const zoomTokens = new Map();
+
+async function zoomToken({ accountId, clientId, clientSecret }) {
+  const cached = zoomTokens.get(clientId);
+  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+  const res = await fetch(
+    `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(accountId)}`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}` },
+    }
+  );
+  const text = await res.text().catch(() => '');
+  let data = {};
+  try { data = JSON.parse(text); } catch { /* reported below */ }
+  if (!res.ok || !data.access_token) {
+    const err = new Error(
+      res.status === 400 || res.status === 401
+        ? `Zoom rejected the account ID, client ID or secret (${data.reason || data.error || `HTTP ${res.status}`}).`
+        : `Zoom sign-in failed (HTTP ${res.status}): ${snippet(text)}`
+    );
+    err.badKey = res.status === 400 || res.status === 401;
+    throw err;
+  }
+  zoomTokens.set(clientId, { token: data.access_token, expiresAt: Date.now() + (data.expires_in || 3600) * 1000 });
+  return data.access_token;
+}
+
+async function zoomGet(creds, path, attempt = 1) {
+  const token = await zoomToken(creds);
+  const res = await fetch(ZOOM_API + path, { headers: { Authorization: `Bearer ${token}` } });
+  const text = await res.text().catch(() => '');
+  let data = null;
+  try { data = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+  if (res.ok && data) return data;
+  if (res.status === 401 && attempt === 1) {
+    zoomTokens.delete(creds.clientId); // expired early; get a fresh one once
+    return zoomGet(creds, path, attempt + 1);
+  }
+  if ((res.status === 429 || res.status >= 500) && attempt < ZOOM_MAX_ATTEMPTS) {
+    const hinted = Number(res.headers.get('retry-after')) * 1000;
+    await sleep(Number.isFinite(hinted) && hinted > 0 ? Math.min(hinted, 30_000) : 1000 * 2 ** (attempt - 1));
+    return zoomGet(creds, path, attempt + 1);
+  }
+  const message = data?.message || snippet(text) || `HTTP ${res.status}`;
+  if (res.status === 404) throw new Error(`Zoom has no user ${creds.userEmail} in that account (${message}).`);
+  if (res.status === 400 && /scope/i.test(message)) {
+    throw new Error(`The Zoom app is missing a scope — add "View all user recordings" (cloud_recording:read:list_user_recordings:admin). Zoom said: ${message}`);
+  }
+  const err = new Error(`Zoom ${res.status}: ${message}`);
+  err.badKey = res.status === 401;
+  throw err;
+}
+
+const zoomDate = d => d.toISOString().slice(0, 10);
+
+function zoomRecording(m) {
+  const durationMin = Number(m.duration) || null;
+  return {
+    source: 'zoom',
+    id: String(m.uuid || m.id),
+    meetingNumber: m.id != null ? String(m.id) : null,
+    title: m.topic || '(no topic)',
+    start: m.start_time || null,
+    end: m.start_time && durationMin ? new Date(Date.parse(m.start_time) + durationMin * 60_000).toISOString() : null,
+    durationMin,
+    url: m.share_url || '',
+    organizer: String(m.host_email || '').toLowerCase(),
+    attendees: [],
+    files: (m.recording_files || []).length,
+  };
+}
+
+/** Proves the credentials, the user and the recordings scope in one call. */
+export async function zoomProbe(creds) {
+  const today = zoomDate(new Date());
+  return zoomGet(creds, `/users/${encodeURIComponent(creds.userEmail)}/recordings?from=${today}&to=${today}&page_size=1`);
+}
+
+/** Every cloud recording of the user's between two instants (≤ 30 days). */
+export async function zoomRecordings(creds, from, to, { onProgress } = {}) {
+  const recordings = [];
+  let token = '';
+  let pages = 0;
+  do {
+    const params = new URLSearchParams({
+      from: zoomDate(from),
+      to: zoomDate(to),
+      page_size: '300',
+      ...(token ? { next_page_token: token } : {}),
+    });
+    const data = await zoomGet(creds, `/users/${encodeURIComponent(creds.userEmail)}/recordings?${params}`);
+    pages += 1;
+    for (const m of data.meetings || []) recordings.push(zoomRecording(m));
+    onProgress?.(`Reading Zoom recordings — ${recordings.length}${data.total_records != null ? ` of ${data.total_records}` : ''} so far`);
+    token = data.next_page_token || '';
+  } while (token && pages < 20);
+  // Zoom's window is whole days; trim to the exact one.
+  const inWindow = recordings.filter(r => {
+    const t = Date.parse(r.start || '');
+    return Number.isFinite(t) && t >= from.getTime() && t <= to.getTime();
+  });
+  return { recordings: inWindow, truncated: !!token };
+}
+
+// A recurring Zoom meeting keeps one number across instances, so a number
+// match still needs the times to be close — just not as close as a bare time
+// match, since people join late and recordings start when someone hits record.
+const ZOOM_ID_SLACK_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Tie each Zoom recording to at most one calendar meeting: the nearest one
+ * whose invite has the same Zoom meeting number (within 2 hours), else the
+ * nearest one starting within MATCH_SLACK_MS. Returns
+ * Map(recordingId -> { meetingId, how: 'meeting number' | 'time', deltaMinutes }).
+ */
+export function matchZoomRecordings(recordings, meetings) {
+  const result = new Map();
+  for (const r of recordings) {
+    const t = Date.parse(r.start || '');
+    if (!Number.isFinite(t)) continue;
+    let best = null;
+    for (const m of meetings) {
+      const delta = Math.abs(Date.parse(m.start) - t);
+      const byNumber = r.meetingNumber && (m.zoomMeetingIds || []).includes(r.meetingNumber) && delta <= ZOOM_ID_SLACK_MS;
+      const byTime = delta <= MATCH_SLACK_MS;
+      if (!byNumber && !byTime) continue;
+      const rank = byNumber ? 0 : 1;
+      if (!best || rank < best.rank || (rank === best.rank && delta < best.delta)) {
+        best = { meetingId: m.id, how: byNumber ? 'meeting number' : 'time', delta, rank };
+      }
+    }
+    if (best) result.set(r.id, { meetingId: best.meetingId, how: best.how, deltaMinutes: Math.round(best.delta / 60_000) });
+  }
+  return result;
+}

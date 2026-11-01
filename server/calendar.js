@@ -131,6 +131,21 @@ export async function fetchBusy(token, timeMin, timeMax) {
   return busy.map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
 }
 
+// Zoom meeting numbers mentioned in an invite — the join link usually sits in
+// the location, the description or the conference details. Used to tie a Zoom
+// recording to the calendar meeting it came from.
+function zoomMeetingIds(e) {
+  const text = [
+    e.location,
+    e.description,
+    ...(e.conferenceData?.entryPoints || []).map(p => p.uri),
+  ].filter(Boolean).join(' ');
+  const ids = new Set();
+  for (const m of text.matchAll(/zoom\.us\/(?:j|my|w|s)\/(\d{9,12})/gi)) ids.add(m[1]);
+  for (const m of text.matchAll(/meeting id[:\s]*([\d ]{9,15})/gi)) ids.add(m[1].replace(/\s/g, ''));
+  return [...ids];
+}
+
 // The owner's actual events in a window — titles included, for their own
 // availability preview. The public booking page never sees these.
 export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } = {}) {
@@ -170,6 +185,7 @@ export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } 
       recurring: !!e.recurringEventId,
       // The series a recurring instance belongs to.
       recurringEventId: e.recurringEventId || null,
+      zoomMeetingIds: zoomMeetingIds(e),
       link: e.htmlLink || null,
     }))
     .filter(e => e.start && e.end);
