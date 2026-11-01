@@ -3,7 +3,7 @@ import type { AssistantChatSession, AssistantChatSummary, ChatAssistant } from '
 import { api } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
-import { Button } from '../common';
+import { Button, ResizeHandle, useResizableWidth } from '../common';
 import { TraceModal } from './TraceModal';
 
 const fullName = (a: { firstName: string; lastName: string }) => `${a.firstName} ${a.lastName}`.trim();
@@ -25,6 +25,7 @@ export function ChatPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sessionsPanel = useResizableWidth('calby:chat-sessions-width', 256, 180, 600);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
@@ -171,9 +172,12 @@ export function ChatPage() {
 
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>}
 
-      <div className="flex-1 min-h-0 flex gap-4">
+      <div className="flex-1 min-h-0 flex">
         {/* Sessions */}
-        <aside className="w-64 shrink-0 bg-white rounded-xl border border-gray-200 flex flex-col min-h-0">
+        <aside
+          className="shrink-0 bg-white rounded-xl border border-gray-200 flex flex-col min-h-0"
+          style={{ width: sessionsPanel.width }}
+        >
           <div className="p-3 border-b border-gray-100 space-y-2">
             {assistants.length > 1 && (
               <select
@@ -214,6 +218,8 @@ export function ChatPage() {
             ))}
           </ul>
         </aside>
+
+        <ResizeHandle label="Resize chat list" className="mx-0.5" {...sessionsPanel.handleProps} />
 
         {/* Conversation */}
         <section className="flex-1 min-w-0 bg-white rounded-xl border border-gray-200 flex flex-col min-h-0">
