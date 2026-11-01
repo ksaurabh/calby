@@ -15,4 +15,4 @@ npm run build
 echo "Restarting PM2..."
 pm2 restart ecosystem.config.cjs || pm2 start ecosystem.config.cjs
 
-echo "Done!"
+echo "Done! Restart finished at: $(date)"
