@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { randomBytes } from 'crypto';
+import { Readable } from 'stream';
 import 'dotenv/config';
 import {
   CALENDAR_SCOPES,
@@ -51,12 +52,15 @@ import {
 } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 import { gmailConsentUrl, gmailProfile } from './gmail.js';
-import { todoReport } from './todos.js';
+import { summarizeTranscript, todoReport } from './todos.js';
 import {
   avomaMeetingSignals,
   avomaMeetings,
   avomaNotes,
   gongHighlights,
+  zoomDownload,
+  zoomMeetingSummary,
+  zoomTranscript,
   avomaProbe,
   findRecordings,
   gongCalls,
@@ -91,6 +95,7 @@ const BOOKINGS_FILE = join(__dirname, 'bookings.json');
 const COMMITMENT_TYPES_FILE = join(__dirname, 'commitment-types.json');
 const NOTES_FILE = join(__dirname, 'notes.json');
 const TODO_REPORTS_FILE = join(__dirname, 'todo-reports.json');
+const ZOOM_SUMMARIES_FILE = join(__dirname, 'zoom-summaries.json');
 const CHAT_SESSIONS_FILE = join(__dirname, 'chat-sessions.json');
 
 // Public base URL for links in calendar invites (the frontend origin).
@@ -3560,6 +3565,131 @@ app.post('/api/recordings/todos', requireAuth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Zoom-only meetings: a summary (Zoom's own AI Companion summary when there is
+// one, else Claude's from the transcript), and the recording to download —
+// e.g. to upload to Avoma, which has no upload API.
+// ---------------------------------------------------------------------------
+function zoomSummaries(email) {
+  return readJson(ZOOM_SUMMARIES_FILE, { summaries: {} }).summaries?.[email.toLowerCase()] || {};
+}
+
+function saveZoomSummary(email, id, summary) {
+  const all = readJson(ZOOM_SUMMARIES_FILE, { summaries: {} }).summaries || {};
+  all[email.toLowerCase()] = { ...(all[email.toLowerCase()] || {}), [id]: summary };
+  writeFileSync(ZOOM_SUMMARIES_FILE, JSON.stringify({ summaries: all }, null, 2));
+}
+
+// A Zoom recording of yours, from a recent pull (or a fresh 30-day one).
+async function findZoomRecording(email, id) {
+  const prefix = `${email.toLowerCase()}:`;
+  for (const [key, entry] of recordingsCache) {
+    if (!key.startsWith(prefix)) continue;
+    const hit = entry.zoom?.meetings.find(r => r.id === id);
+    if (hit) return hit;
+  }
+  const fresh = await recordingsFor(email, 30, { refresh: false, progress: () => {} });
+  return fresh.zoom.meetings.find(r => r.id === id) || null;
+}
+
+app.post('/api/recordings/zoom/summary', requireAuth, async (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const id = String(req.body.id || '');
+  const creds = recordingCredsFor(email);
+  if (!creds.zoom) return res.status(409).json({ error: 'Connect Zoom in Settings first.' });
+
+  const saved = zoomSummaries(email)[id];
+  if (saved && !req.body.refresh) return res.json({ summary: saved });
+
+  const progress = progressFor(req);
+  try {
+    progress('Finding the recording');
+    const recording = await findZoomRecording(email, id);
+    if (!recording) return res.status(404).json({ error: 'That Zoom recording is not in the last 30 days.' });
+
+    progress("Asking Zoom for its AI Companion summary");
+    const zoomSummary = await zoomMeetingSummary(creds.zoom, recording.id);
+    let summary;
+    if (zoomSummary.text) {
+      summary = { text: zoomSummary.text, source: 'zoom', at: new Date().toISOString(), costUsd: 0 };
+    } else {
+      progress('No Zoom summary — reading the transcript instead');
+      const transcript = await zoomTranscript(creds.zoom, recording);
+      if (!transcript) {
+        return res.status(404).json({
+          error: `Zoom has no summary (${zoomSummary.reason}) and no transcript for this recording. ` +
+            'Turn on cloud recording transcripts or AI Companion summaries in Zoom.',
+        });
+      }
+      const keyInfo = anthropicKeyFor(email);
+      if (!keyInfo.key) {
+        return res.status(501).json({ error: 'No Anthropic API key is configured to summarise the transcript.' });
+      }
+      progress('Summarising the transcript (AI)');
+      const user = findUser(email);
+      const result = await summarizeTranscript({
+        person: { email, name: user?.name || req.user.name || '' },
+        title: recording.title,
+        start: recording.start,
+        transcript,
+        timezone: ownerTimezone(email),
+        apiKey: keyInfo.key,
+        keySource: keyInfo.source,
+      });
+      summary = {
+        text: result.text,
+        source: 'transcript',
+        zoomSummaryUnavailable: zoomSummary.reason,
+        at: new Date().toISOString(),
+        costUsd: costOf(result.model, result.usage),
+      };
+    }
+    progress('Done');
+    saveZoomSummary(email, id, summary);
+    res.json({ summary });
+  } catch (err) {
+    console.error('[zoom summary] failed:', err.message);
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Stream a recording file from Zoom to the browser as a download. Picks the
+// best video when no file is named (speaker + shared screen, then the rest),
+// else the audio.
+const ZOOM_VIDEO_PREFERENCE = [
+  'shared_screen_with_speaker_view', 'shared_screen_with_speaker_view(CC)', 'active_speaker',
+  'shared_screen_with_gallery_view', 'gallery_view', 'shared_screen',
+];
+
+app.get('/api/recordings/zoom/download', requireAuth, async (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const creds = recordingCredsFor(email);
+  if (!creds.zoom) return res.status(409).json({ error: 'Connect Zoom in Settings first.' });
+  try {
+    const recording = await findZoomRecording(email, String(req.query.id || ''));
+    if (!recording) return res.status(404).json({ error: 'That Zoom recording is not in the last 30 days.' });
+    const videos = recording.files.filter(f => f.fileType === 'MP4');
+    const file = req.query.file
+      ? recording.files.find(f => f.id === req.query.file)
+      : ZOOM_VIDEO_PREFERENCE.map(t => videos.find(f => f.type === t)).find(Boolean) ||
+        videos[0] || recording.files.find(f => f.fileType === 'M4A');
+    if (!file) return res.status(404).json({ error: 'This recording has no video or audio file.' });
+
+    const upstream = await zoomDownload(creds.zoom, file);
+    const day = String(recording.start || '').slice(0, 10);
+    const name = `${recording.title} ${day}`.replace(/[^\w .-]+/g, '').trim().slice(0, 120) || 'zoom-recording';
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
+    const length = upstream.headers.get('content-length');
+    if (length) res.setHeader('Content-Length', length);
+    res.setHeader('Content-Disposition', `attachment; filename="${name}.${file.extension || 'mp4'}"`);
+    Readable.fromWeb(upstream.body).pipe(res);
+  } catch (err) {
+    console.error('[zoom download] failed:', err.message);
+    if (!res.headersSent) res.status(502).json({ error: err.message });
+    else res.end();
+  }
+});
+
 const involves = (recording, email) =>
   recording.organizer === email || recording.attendees.some(a => a.email === email);
 
@@ -3637,11 +3767,21 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
         how: match.how, deltaMinutes: match.deltaMinutes,
       });
     }
+    // Did Avoma or Gong record the same meeting? (Starts within 10 minutes.)
+    const others = all.filter(o => o.source !== 'zoom');
+    const savedSummaries = zoomSummaries(email);
     const zoomWithMatches = recordings.zoom.meetings.map(r => {
       const match = zoomMatches.get(r.id);
       const meeting = match && meetingsById.get(match.meetingId);
+      const t = Date.parse(r.start || '');
+      const alsoIn = [...new Set(others
+        .filter(o => Math.abs(Date.parse(o.start || '') - t) <= 10 * 60 * 1000)
+        .map(o => o.source))];
       return {
         ...r,
+        alsoIn,
+        files: r.files.map(({ downloadUrl: _url, ...f }) => f),
+        summary: savedSummaries[r.id] || null,
         matchedMeeting: meeting
           ? { id: meeting.id, title: meeting.title, start: meeting.start, how: match.how, deltaMinutes: match.deltaMinutes }
           : null,

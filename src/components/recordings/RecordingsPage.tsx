@@ -4,6 +4,7 @@ import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, ProgressSteps } from '../common';
 import { TodoReportPanel } from './TodoReportPanel';
+import { ZoomOnlyActions } from './ZoomOnlyActions';
 import type { ProgressStep } from '../common/ProgressSteps';
 
 type Data = Awaited<ReturnType<typeof api.recordings>>;
@@ -300,9 +301,16 @@ function AvomaLookupBox() {
   );
 }
 
-function ZoomTable({ source, timezone, days }: { source: RecordingSource; timezone: string; days: number }) {
+function ZoomTable({ source, timezone, days, meetings }: {
+  source: RecordingSource;
+  timezone: string;
+  days: number;
+  /** Calendar meetings, for the attendees of a matched one. */
+  meetings: AttendedMeeting[];
+}) {
   const [open, setOpen] = useState(true);
   const unmatched = source.meetings.filter(m => !m.matchedMeeting).length;
+  const zoomOnly = source.meetings.filter(m => !m.alsoIn?.length).length;
   return (
     <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
       <button
@@ -318,7 +326,8 @@ function ZoomTable({ source, timezone, days }: { source: RecordingSource; timezo
               ? 'Not connected — add your Zoom app credentials in Settings.'
               : `Cloud recordings of ${source.userEmail}, last ${days} days. Zoom gives no attendee list, so each ` +
                 'is matched to a meeting by start time (within 10 min), or by Zoom meeting number when the invite has the link.' +
-                (unmatched ? ` ${unmatched} matched no meeting.` : '')}
+                (unmatched ? ` ${unmatched} matched no meeting.` : '') +
+                (zoomOnly ? ` ${zoomOnly} recorded only in Zoom — summarize, download or send to Avoma.` : '')}
           </p>
         </div>
         <span className="text-gray-400 text-sm">{open ? '▾' : '▸'}</span>
@@ -336,6 +345,7 @@ function ZoomTable({ source, timezone, days }: { source: RecordingSource; timezo
                   <th className="px-4 py-2 font-medium">Topic</th>
                   <th className="px-4 py-2 font-medium w-20">Length</th>
                   <th className="px-4 py-2 font-medium">Calendar meeting</th>
+                  <th className="px-4 py-2 font-medium">Also in</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -355,6 +365,23 @@ function ZoomTable({ source, timezone, days }: { source: RecordingSource; timezo
                         </>
                       ) : (
                         <span className="text-amber-700">No calendar meeting with other attendees at that time</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 min-w-48">
+                      {r.alsoIn?.length ? (
+                        <span className="text-xs text-gray-600">{r.alsoIn.map(x => SOURCE_LABEL[x]).join(', ')}</span>
+                      ) : (
+                        <>
+                          <span className="text-xs text-amber-700">Only in Zoom</span>
+                          <ZoomOnlyActions
+                            recording={r}
+                            meetingTitle={r.matchedMeeting?.title}
+                            attendees={meetings
+                              .find(m => m.id === r.matchedMeeting?.id)
+                              ?.attendees.map(a => (a.name && a.name !== a.email ? `${a.name} <${a.email}>` : a.email))}
+                            timezone={timezone}
+                          />
+                        </>
                       )}
                     </td>
                   </tr>
@@ -678,7 +705,7 @@ export function RecordingsPage() {
 
           <RecordingsTable label="Avoma" source={data.avoma} data={data} timezone={tz} />
           <RecordingsTable label="Gong" source={data.gong} data={data} timezone={tz} />
-          <ZoomTable source={data.zoom} timezone={tz} days={data.days} />
+          <ZoomTable source={data.zoom} timezone={tz} days={data.days} meetings={data.calendar.meetings} />
 
           {(data.calendar.ignored.length > 0 || data.ignoreRules.length > 0) && (
             <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">

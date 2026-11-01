@@ -151,6 +151,12 @@ export interface Recording {
   /** Zoom only. */
   meetingNumber?: string | null;
   durationMin?: number | null;
+  /** Zoom only: other services that recorded the same meeting. */
+  alsoIn?: RecordingSourceName[];
+  /** Zoom only: the recording's files (video, audio, transcript…). */
+  files?: { id: string; type: string; fileType: string; extension: string; size: number }[];
+  /** Zoom only: a summary made earlier, if any. */
+  summary?: ZoomSummary | null;
   /** Zoom only: the calendar meeting this recording was tied to, and how. */
   matchedMeeting?: { id: string; title: string; start: string; how: 'meeting number' | 'time'; deltaMinutes: number } | null;
 }
@@ -179,6 +185,15 @@ export interface AttendedMeeting {
   recurringEventId: string | null;
   /** Set when you've chosen to ignore it: just this one, or by an "always" rule. */
   ignored?: { kind: 'once' | 'always'; ruleId?: string; at: string } | null;
+}
+
+/** A Zoom-only meeting's summary: Zoom's own, or Claude's from the transcript. */
+export interface ZoomSummary {
+  text: string;
+  source: 'zoom' | 'transcript';
+  zoomSummaryUnavailable?: string;
+  at: string;
+  costUsd: number;
 }
 
 /** Action items for you, from Avoma notes and Gong highlights. */

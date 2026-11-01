@@ -105,3 +105,46 @@ export async function todoReport({ person, meetings, timezone, apiKey, keySource
     }));
   return { items, usage: response.usage, model: response.model };
 }
+
+// ---------------------------------------------------------------------------
+// Summarising a meeting from its transcript — for meetings only Zoom recorded,
+// where there are no Avoma notes or Gong highlights to read instead.
+// ---------------------------------------------------------------------------
+const SUMMARY_SYSTEM = `You summarise a recorded meeting from its transcript
+for one of the people in it.
+
+Write plain text with these sections, each short:
+Overview: two or three sentences — who met, why, and the outcome.
+Key points: the substance, as "-" bullets.
+Decisions: what was agreed, as bullets (or "None").
+Next steps: who does what by when, as bullets, naming the owner; mark the
+reader's own items with "(you)".
+
+Only state what the transcript supports. Transcripts are machine-made and
+mis-hear names and numbers; when something is unclear, say so rather than
+guess.`;
+
+const MAX_TRANSCRIPT_CHARS = 150_000;
+
+export async function summarizeTranscript({ person, title, start, transcript, timezone, apiKey, keySource }) {
+  const when = new Date(start).toLocaleString('en-US', {
+    timeZone: timezone, weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+  const text = transcript.length > MAX_TRANSCRIPT_CHARS
+    ? `${transcript.slice(0, MAX_TRANSCRIPT_CHARS)}\n[…transcript truncated]`
+    : transcript;
+  const response = await callClaude({
+    model: 'claude-opus-5',
+    max_tokens: 3000,
+    system: SUMMARY_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: `The reader: ${person.name || person.email} <${person.email}>.\nMeeting: "${title}", ${when}.\n\nTranscript:\n${text}`,
+    }],
+  }, { apiKey, email: person.email, keySource, feature: 'zoom-summary' });
+  return {
+    text: response.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim(),
+    usage: response.usage,
+    model: response.model,
+  };
+}

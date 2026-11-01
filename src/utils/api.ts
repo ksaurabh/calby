@@ -1,4 +1,5 @@
 import type {
+  ZoomSummary,
   TodoReport,
   IgnoreRule,
   IntegrationStatus,
@@ -363,6 +364,15 @@ export const api = {
       recorded: boolean | null;
       reason: string;
     }>(`/api/recordings/avoma/${encodeURIComponent(uuid)}`),
+
+  // Zoom-only meetings: a summary, and the recording file
+  zoomSummary: (id: string, refresh = false, progressId?: string) =>
+    request<{ summary: ZoomSummary }>(
+      `/api/recordings/zoom/summary${progressId ? `?progress=${encodeURIComponent(progressId)}` : ''}`,
+      { method: 'POST', body: JSON.stringify({ id, refresh }) }
+    ),
+
+  zoomDownloadUrl: (id: string) => `${API_URL}/api/recordings/zoom/download?id=${encodeURIComponent(id)}`,
 
   // To-do report from your recorded meetings' summary notes
   todoReport: () => request<{ report: TodoReport | null }>('/api/recordings/todos'),

@@ -113,6 +113,17 @@ English, and share a booking link that writes real invites to your calendar.
   number (within 2 hours), else the nearest one starting within 10 minutes; the
   Zoom section shows which meeting each recording matched and how. Pulls are
   kept for 5 minutes per user; the clients retry rate limits.
+- **To-do report.** On Recordings, "Create to-do report" (last day / 7 / 14
+  days) reads the summary notes of your recorded meetings — Avoma's notes and
+  Gong's highlights, never the transcripts — and has Claude list your action
+  items with due date, priority and the line each came from. The latest report
+  is saved per user.
+- **Zoom-only recordings.** A Zoom recording with no Avoma or Gong recording of
+  the same meeting gets Summarize (Zoom AI Companion's summary when available —
+  needs the meeting-summary scope — else Claude's, from Zoom's transcript file),
+  Download (streamed from Zoom through the server), and Upload to Avoma: Avoma
+  has no upload API, so this downloads the file and walks you through Avoma's
+  Upload Recording, with the meeting details ready to copy.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

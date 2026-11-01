@@ -445,7 +445,11 @@ async function zoomGet(creds, path, attempt = 1) {
     return zoomGet(creds, path, attempt + 1);
   }
   const message = data?.message || snippet(text) || `HTTP ${res.status}`;
-  if (res.status === 404) throw new Error(`Zoom has no user ${creds.userEmail} in that account (${message}).`);
+  if (res.status === 404) {
+    throw new Error(path.startsWith('/users/')
+      ? `Zoom has no user ${creds.userEmail} in that account (${message}).`
+      : `Zoom: ${message}`);
+  }
   if (res.status === 400 && /scope/i.test(message)) {
     throw new Error(`The Zoom app is missing a scope — add "View all user recordings" (cloud_recording:read:list_user_recordings:admin). Zoom said: ${message}`);
   }
@@ -469,7 +473,18 @@ function zoomRecording(m) {
     url: m.share_url || '',
     organizer: String(m.host_email || '').toLowerCase(),
     attendees: [],
-    files: (m.recording_files || []).length,
+    // The recording's files — video, audio, transcript, chat. download_url
+    // needs a Zoom token, so it stays on the server.
+    files: (m.recording_files || [])
+      .filter(f => f.download_url && f.status !== 'processing')
+      .map(f => ({
+        id: String(f.id || ''),
+        type: f.recording_type || '',
+        fileType: f.file_type || '',
+        extension: (f.file_extension || f.file_type || '').toLowerCase(),
+        size: Number(f.file_size) || 0,
+        downloadUrl: f.download_url,
+      })),
   };
 }
 
@@ -601,4 +616,65 @@ export async function gongHighlights(accessKey, secretKey, callIds) {
     pages += 1;
   } while (cursor && pages < 10);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Zoom: summaries and downloads, for meetings only Zoom recorded
+// ---------------------------------------------------------------------------
+/** A Zoom recording file, streamed with the app's token. Returns the fetch Response. */
+export async function zoomDownload(creds, file) {
+  const token = await zoomToken(creds);
+  const res = await fetch(file.downloadUrl, { headers: { Authorization: `Bearer ${token}` }, redirect: 'follow' });
+  if (!res.ok) throw new Error(`Zoom download failed (HTTP ${res.status}).`);
+  return res;
+}
+
+// Zoom meeting UUIDs that start with "/" or contain "//" must be encoded twice.
+const zoomUuidPath = uuid =>
+  uuid.startsWith('/') || uuid.includes('//') ? encodeURIComponent(encodeURIComponent(uuid)) : encodeURIComponent(uuid);
+
+/**
+ * Zoom AI Companion's own summary of a meeting, as text — or null with the
+ * reason when there isn't one (not enabled, missing scope, not available).
+ */
+export async function zoomMeetingSummary(creds, uuid) {
+  try {
+    const data = await zoomGet(creds, `/meetings/${zoomUuidPath(uuid)}/meeting_summary`);
+    const parts = [];
+    if (data.summary_overview) parts.push(String(data.summary_overview).trim());
+    for (const d of data.summary_details || []) {
+      const text = String(d.summary || '').trim();
+      if (text) parts.push(d.label ? `${d.label}:\n${text}` : text);
+    }
+    const steps = (data.next_steps || []).map(s => `- ${String(s).trim()}`).filter(l => l !== '- ');
+    if (steps.length) parts.push(`Next steps:\n${steps.join('\n')}`);
+    const text = parts.join('\n\n').trim();
+    return text ? { text } : { text: null, reason: 'Zoom returned an empty summary' };
+  } catch (err) {
+    return { text: null, reason: err.message };
+  }
+}
+
+// WebVTT -> "Speaker: words" lines, merging consecutive lines by one speaker.
+export function vttToText(vtt) {
+  const lines = [];
+  for (const raw of String(vtt || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line === 'WEBVTT' || /^\d+$/.test(line) || line.includes('-->')) continue;
+    const m = /^([^:]{1,60}):\s*(.*)$/.exec(line);
+    const speaker = m ? m[1] : null;
+    const words = m ? m[2] : line;
+    const last = lines[lines.length - 1];
+    if (last && speaker && last.speaker === speaker) last.words += ` ${words}`;
+    else lines.push({ speaker, words });
+  }
+  return lines.map(l => (l.speaker ? `${l.speaker}: ${l.words}` : l.words)).join('\n');
+}
+
+/** The recording's transcript as text, or null when Zoom made none. */
+export async function zoomTranscript(creds, recording) {
+  const file = recording.files.find(f => f.type === 'audio_transcript' || f.fileType === 'TRANSCRIPT');
+  if (!file) return null;
+  const res = await zoomDownload(creds, file);
+  return vttToText(await res.text());
 }
