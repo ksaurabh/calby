@@ -121,6 +121,44 @@ export interface AssistantChatSession extends Omit<AssistantChatSummary, 'messag
   messages: AssistantChatMessage[];
 }
 
+export interface IntegrationStatus {
+  connected: boolean;
+  hint?: string;
+  setBy?: string | null;
+  setAt?: string | null;
+}
+
+/** A meeting recording from Avoma or Gong. */
+export interface Recording {
+  source: 'avoma' | 'gong';
+  id: string;
+  title: string;
+  start: string | null;
+  end: string | null;
+  url: string;
+  organizer: string;
+  attendees: { email: string; name: string; affiliation?: string }[];
+}
+
+/** A calendar meeting that had other people in it, and its recordings. */
+export interface AttendedMeeting {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  link: string | null;
+  attendees: { email: string; name: string; responseStatus: string }[];
+  recordings: { source: 'avoma' | 'gong'; id: string; title: string; url: string; start: string | null }[];
+}
+
+export interface RecordingSource {
+  connected: boolean;
+  source: 'org' | 'server' | null;
+  meetings: Recording[];
+  error: string | null;
+  truncated: boolean;
+}
+
 export interface Org {
   id: string;
   name: string;
@@ -131,6 +169,9 @@ export interface Org {
   anthropicKeyHint?: string | null;
   anthropicKeySetBy?: string | null;
   anthropicKeySetAt?: string | null;
+  /** Recording integrations, shared by everyone on the org's domain. */
+  avoma?: IntegrationStatus;
+  gong?: IntegrationStatus;
   /** First person on the org's domain to sign in after it was created. */
   adminEmail: string | null;
   adminClaimedAt: string | null;

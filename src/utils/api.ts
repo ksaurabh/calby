@@ -1,4 +1,6 @@
 import type {
+  AttendedMeeting,
+  RecordingSource,
   AssistantChatSession,
   AssistantChatSummary,
   ChatAssistant,
@@ -294,6 +296,41 @@ export const api = {
 
   removeOrgAnthropicKey: (id: string) =>
     request<Org>(`/api/orgs/${id}/anthropic-key`, { method: 'DELETE' }),
+
+  // Recording integrations (per org)
+  setOrgAvoma: (id: string, apiKey: string) =>
+    request<Org>(`/api/orgs/${id}/avoma`, { method: 'PUT', body: JSON.stringify({ apiKey }) }),
+
+  setOrgGong: (id: string, accessKey: string, secretKey: string) =>
+    request<Org>(`/api/orgs/${id}/gong`, { method: 'PUT', body: JSON.stringify({ accessKey, secretKey }) }),
+
+  removeOrgIntegration: (id: string, service: 'avoma' | 'gong') =>
+    request<Org>(`/api/orgs/${id}/${service}`, { method: 'DELETE' }),
+
+  // Recordings from Avoma and Gong, and calendar meetings without one
+  recordings: (options: { days: number; scope: 'me' | 'org'; refresh?: boolean }, progressId?: string) =>
+    request<{
+      days: number;
+      scope: 'me' | 'org';
+      canSeeOrg: boolean;
+      from: string;
+      to: string;
+      fetchedAt: string;
+      timezone: string;
+      avoma: RecordingSource;
+      gong: RecordingSource;
+      calendar: {
+        connected: boolean;
+        error: string | null;
+        meetings: AttendedMeeting[];
+        unrecorded: AttendedMeeting[];
+      };
+    }>(`/api/recordings?${new URLSearchParams({
+      days: String(options.days),
+      scope: options.scope,
+      ...(options.refresh ? { refresh: '1' } : {}),
+      ...(progressId ? { progress: progressId } : {}),
+    })}`),
 
   // Users
   listUsers: () =>

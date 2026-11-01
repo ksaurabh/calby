@@ -15,6 +15,7 @@ const NAV_ITEMS: NavItem[] = [
   { view: 'commitments', label: 'Commitment types', icon: '🎨' },
   { view: 'chat', label: 'Chat', icon: '💬' },
   { view: 'notes', label: 'Notes', icon: '📝' },
+  { view: 'recordings', label: 'Recordings', icon: '🎙' },
   { view: 'settings', label: 'Settings', icon: '⚙' },
   { view: 'admin', label: 'Administration', icon: '🛡', managersOnly: true },
 ];
