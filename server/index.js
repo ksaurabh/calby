@@ -51,9 +51,12 @@ import {
 } from './assistant.js';
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 import { gmailConsentUrl, gmailProfile } from './gmail.js';
+import { todoReport } from './todos.js';
 import {
   avomaMeetingSignals,
   avomaMeetings,
+  avomaNotes,
+  gongHighlights,
   avomaProbe,
   findRecordings,
   gongCalls,
@@ -87,6 +90,7 @@ const EVENT_TYPES_FILE = join(__dirname, 'event-types.json');
 const BOOKINGS_FILE = join(__dirname, 'bookings.json');
 const COMMITMENT_TYPES_FILE = join(__dirname, 'commitment-types.json');
 const NOTES_FILE = join(__dirname, 'notes.json');
+const TODO_REPORTS_FILE = join(__dirname, 'todo-reports.json');
 const CHAT_SESSIONS_FILE = join(__dirname, 'chat-sessions.json');
 
 // Public base URL for links in calendar invites (the frontend origin).
@@ -3403,6 +3407,156 @@ app.get('/api/recordings/avoma/:uuid', requireAuth, async (req, res) => {
     res.json(await avomaMeetingSignals(creds.avoma.apiKey, req.params.uuid));
   } catch (err) {
     res.status(502).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// To-do reports — action items for you, from the summary notes Avoma and Gong
+// wrote about your recorded meetings (never the transcripts).
+// ---------------------------------------------------------------------------
+// Notes for a finished meeting rarely change, so each is fetched once an hour.
+const summaryCache = new Map();
+const SUMMARY_TTL = 60 * 60 * 1000;
+
+function cachedSummary(key) {
+  const hit = summaryCache.get(key);
+  return hit && Date.now() - hit.at < SUMMARY_TTL ? hit.text : undefined;
+}
+
+function getTodoReports() {
+  return readJson(TODO_REPORTS_FILE, { reports: {} }).reports || {};
+}
+
+function saveTodoReport(email, report) {
+  const reports = getTodoReports();
+  reports[email.toLowerCase()] = report;
+  writeFileSync(TODO_REPORTS_FILE, JSON.stringify({ reports }, null, 2));
+}
+
+app.get('/api/recordings/todos', requireAuth, (req, res) => {
+  res.json({ report: getTodoReports()[req.user.email.toLowerCase()] || null });
+});
+
+app.post('/api/recordings/todos', requireAuth, async (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const days = [1, 7, 14].includes(Number(req.body.days)) ? Number(req.body.days) : 7;
+  const progress = progressFor(req);
+  const keyInfo = anthropicKeyFor(email);
+  if (!keyInfo.key) {
+    return res.status(501).json({
+      error: 'No Anthropic API key is configured. An admin of your organization can add one on the Organizations page.',
+    });
+  }
+  const creds = recordingCredsFor(email);
+  if (!creds.avoma && !creds.gong) {
+    return res.status(409).json({ error: 'Connect Avoma or Gong in Settings first.' });
+  }
+
+  try {
+    const recordings = await recordingsFor(email, days, { refresh: false, progress });
+    const since = Date.now() - days * 86400_000;
+    const inRange = r => Date.parse(r.start || '') >= since;
+    // Your recorded meetings: Avoma ones it didn't say it missed, and Gong calls.
+    const avoma = recordings.avoma.meetings.filter(m => m.recorded !== false && involves(m, email) && inRange(m));
+    const gong = recordings.gong.meetings.filter(m => involves(m, email) && inRange(m));
+
+    // The same meeting recorded by both becomes one entry with both notes.
+    const meetings = avoma.map(m => ({ title: m.title, start: m.start, attendees: m.attendees, sources: [m] }));
+    for (const call of gong) {
+      const t = Date.parse(call.start);
+      const twin = meetings.find(m => !m.sources.some(s => s.source === 'gong') &&
+        Math.abs(Date.parse(m.start) - t) <= 10 * 60 * 1000);
+      if (twin) twin.sources.push(call);
+      else meetings.push({ title: call.title, start: call.start, attendees: call.attendees, sources: [call] });
+    }
+    meetings.sort((a, b) => a.start.localeCompare(b.start));
+    if (!meetings.length) {
+      return res.status(404).json({ error: `No recorded Avoma or Gong meetings with you in the last ${days === 1 ? 'day' : `${days} days`}.` });
+    }
+
+    // Summary notes: Avoma's notes per meeting, Gong's highlights in one batch.
+    const avomaIds = meetings.flatMap(m => m.sources.filter(s => s.source === 'avoma').map(s => s.id));
+    const gongIds = meetings.flatMap(m => m.sources.filter(s => s.source === 'gong').map(s => s.id));
+    const notes = new Map();
+    const errors = [];
+    let done = 0;
+    for (const id of avomaIds) {
+      progress(`Reading Avoma's notes — ${done} of ${avomaIds.length}`);
+      const key = `avoma:${id}`;
+      let text = cachedSummary(key);
+      if (text === undefined) {
+        try {
+          text = await avomaNotes(creds.avoma.apiKey, id);
+          summaryCache.set(key, { at: Date.now(), text });
+        } catch (err) {
+          errors.push(`Avoma notes for ${id}: ${err.message}`);
+          text = '';
+        }
+      }
+      notes.set(key, text);
+      done += 1;
+    }
+    const uncachedGong = gongIds.filter(id => cachedSummary(`gong:${id}`) === undefined);
+    if (uncachedGong.length) {
+      progress(`Reading Gong's highlights for ${uncachedGong.length} call${uncachedGong.length === 1 ? '' : 's'}`);
+      try {
+        const fetched = await gongHighlights(creds.gong.accessKey, creds.gong.secretKey, uncachedGong);
+        for (const id of uncachedGong) summaryCache.set(`gong:${id}`, { at: Date.now(), text: fetched.get(id) || '' });
+      } catch (err) {
+        errors.push(`Gong highlights: ${err.message}`);
+      }
+    }
+    for (const id of gongIds) notes.set(`gong:${id}`, cachedSummary(`gong:${id}`) || '');
+
+    const withNotes = [];
+    const skipped = [];
+    for (const m of meetings) {
+      const texts = m.sources
+        .map(s => ({ source: s.source, text: notes.get(`${s.source}:${s.id}`) || '' }))
+        .filter(n => n.text);
+      const entry = {
+        title: m.title,
+        start: m.start,
+        attendees: m.attendees.filter(a => a.email !== email).slice(0, 20),
+        recordings: m.sources.map(s => ({ source: s.source, id: s.id, url: s.url })),
+      };
+      if (texts.length) withNotes.push({ ...entry, notes: texts });
+      else skipped.push({ ...entry, reason: 'No summary notes yet' });
+    }
+    if (!withNotes.length) {
+      return res.status(404).json({ error: 'None of these meetings has summary notes in Avoma or Gong yet.', skipped, errors });
+    }
+
+    progress(`Finding your action items in ${withNotes.length} meeting${withNotes.length === 1 ? '' : 's'} (AI)`);
+    const user = findUser(email);
+    const timezone = ownerTimezone(email);
+    const result = await todoReport({
+      person: { email, name: user?.name || req.user.name || '' },
+      meetings: withNotes,
+      timezone,
+      apiKey: keyInfo.key,
+      keySource: keyInfo.source,
+    });
+
+    progress('Done');
+    const report = {
+      generatedAt: new Date().toISOString(),
+      days,
+      timezone,
+      meetings: withNotes.map(({ notes: _notes, ...m }, i) => ({
+        ...m,
+        notesFrom: _notes.map(n => n.source),
+        items: result.items.filter(it => it.meetingIndex === i).map(({ meetingIndex: _i, ...it }) => it),
+      })),
+      skipped,
+      errors,
+      costUsd: costOf(result.model, result.usage),
+    };
+    saveTodoReport(email, report);
+    res.json({ report });
+  } catch (err) {
+    console.error('[todos] failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
   }
 });
 

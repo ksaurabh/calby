@@ -1,4 +1,5 @@
 import type {
+  TodoReport,
   IgnoreRule,
   IntegrationStatus,
   AttendedMeeting,
@@ -362,6 +363,15 @@ export const api = {
       recorded: boolean | null;
       reason: string;
     }>(`/api/recordings/avoma/${encodeURIComponent(uuid)}`),
+
+  // To-do report from your recorded meetings' summary notes
+  todoReport: () => request<{ report: TodoReport | null }>('/api/recordings/todos'),
+
+  createTodoReport: (days: number, progressId?: string) =>
+    request<{ report: TodoReport }>(
+      `/api/recordings/todos${progressId ? `?progress=${encodeURIComponent(progressId)}` : ''}`,
+      { method: 'POST', body: JSON.stringify({ days }) }
+    ),
 
   // Meetings you don't want flagged as unrecorded
   ignoreMeeting: (meeting: { eventId: string; title: string; start: string; recurringEventId: string | null; always: boolean }) =>

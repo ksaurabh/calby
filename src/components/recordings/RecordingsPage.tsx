@@ -3,6 +3,7 @@ import type { AttendedMeeting, IgnoreRule, Recording, RecordingSource, Recording
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, ProgressSteps } from '../common';
+import { TodoReportPanel } from './TodoReportPanel';
 import type { ProgressStep } from '../common/ProgressSteps';
 
 type Data = Awaited<ReturnType<typeof api.recordings>>;
@@ -554,8 +555,10 @@ export function RecordingsPage() {
         </div>
       </div>
 
+      <TodoReportPanel />
+
       {data && !loading && (
-        <p className="text-xs text-gray-400 -mt-4">
+        <p className="text-xs text-gray-400">
           Recordings fetched at {new Date(data.fetchedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
           {' '}· kept for 5 minutes; Refresh re-reads Avoma and Gong.
         </p>

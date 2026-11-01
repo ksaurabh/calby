@@ -181,6 +181,36 @@ export interface AttendedMeeting {
   ignored?: { kind: 'once' | 'always'; ruleId?: string; at: string } | null;
 }
 
+/** Action items for you, from Avoma notes and Gong highlights. */
+export interface TodoItem {
+  task: string;
+  due: string | null;
+  priority: 'high' | 'medium' | 'low';
+  /** low when ownership was inferred ("we'll send…"). */
+  confidence: 'high' | 'low';
+  evidence: string;
+}
+
+export interface TodoReportMeeting {
+  title: string;
+  start: string;
+  attendees: { email: string; name: string }[];
+  recordings: { source: RecordingSourceName; id: string; url: string }[];
+  notesFrom?: RecordingSourceName[];
+  items?: TodoItem[];
+  reason?: string;
+}
+
+export interface TodoReport {
+  generatedAt: string;
+  days: number;
+  timezone: string;
+  meetings: TodoReportMeeting[];
+  skipped: TodoReportMeeting[];
+  errors: string[];
+  costUsd: number;
+}
+
 /** "Always ignore": a recurring series, or every meeting with a title. */
 export interface IgnoreRule {
   id: string;

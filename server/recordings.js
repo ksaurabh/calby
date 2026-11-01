@@ -536,3 +536,69 @@ export function matchZoomRecordings(recordings, meetings) {
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Summary notes — what the services already wrote about a meeting. Used
+// instead of transcripts: far shorter, and already distilled.
+// ---------------------------------------------------------------------------
+/** Avoma's notes for one meeting, as plain text ('' when it has none). */
+export async function avomaNotes(apiKey, uuid) {
+  const data = await avomaGet(apiKey, `/notes?meeting_uuid=${encodeURIComponent(uuid)}`);
+  const parts = [];
+  for (const r of avomaRows(data)) {
+    const category = pick(r, ['category', 'smart_category', 'title']);
+    const items = pick(r, ['notes', 'items', 'data'], null);
+    if (Array.isArray(items) && items.length) {
+      const lines = items
+        .map(it => `- ${String(typeof it === 'string' ? it : pick(it, ['text', 'note', 'content'])).trim()}`)
+        .filter(line => line !== '- ');
+      if (lines.length) parts.push(`${category ? `${category}:\n` : ''}${lines.join('\n')}`);
+      continue;
+    }
+    const text = String(pick(r, ['text', 'note', 'content', 'summary']) || '').trim();
+    if (text) parts.push(`${category ? `${category}:\n` : ''}${text}`);
+  }
+  return parts.join('\n\n').trim();
+}
+
+// Gong's AI highlights: the brief, key points and highlight sections (such as
+// "Next steps").
+function formatGongHighlights(content = {}) {
+  const parts = [];
+  if (content.brief) parts.push(`Summary:\n${String(content.brief).trim()}`);
+  if (Array.isArray(content.keyPoints) && content.keyPoints.length) {
+    parts.push(`Key points:\n${content.keyPoints.map(k => `- ${(k.text || '').trim()}`).filter(l => l !== '- ').join('\n')}`);
+  }
+  for (const h of content.highlights || []) {
+    const items = (h.items || []).map(it => `- ${(it.text || '').trim()}`).filter(l => l !== '- ');
+    if (items.length) parts.push(`${h.title || 'Highlights'}:\n${items.join('\n')}`);
+  }
+  return parts.join('\n\n').trim();
+}
+
+/** Gong highlights for several calls: Map(callId -> text). */
+export async function gongHighlights(accessKey, secretKey, callIds) {
+  const out = new Map();
+  if (!callIds.length) return out;
+  const auth = gongAuthHeader(accessKey, secretKey);
+  let cursor;
+  let pages = 0;
+  do {
+    const data = await gongRequest(auth, '/calls/extensive', {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: { callIds: callIds.map(String) },
+        contentSelector: { exposedFields: { content: { brief: true, keyPoints: true, highlights: true } } },
+        ...(cursor ? { cursor } : {}),
+      }),
+    });
+    if (data === null) break;
+    for (const c of data.calls || []) {
+      const id = String(c.metaData?.id || '');
+      if (id) out.set(id, formatGongHighlights(c.content));
+    }
+    cursor = data.records?.cursor;
+    pages += 1;
+  } while (cursor && pages < 10);
+  return out;
+}
