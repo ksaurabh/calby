@@ -3251,6 +3251,17 @@ app.put('/api/settings/zoom', requireAuth, async (req, res) => {
   res.json(userIntegrations(req.user.email));
 });
 
+// Your own saved credentials, in full — only when you open one to edit or
+// copy it, only to you, and never cached by the browser.
+app.get('/api/settings/:service/credentials', requireAuth, (req, res) => {
+  const creds = recordingCredsFor(req.user.email);
+  const service = req.params.service;
+  if (!['avoma', 'gong', 'zoom'].includes(service)) return res.status(404).json({ error: 'Unknown service' });
+  if (!creds[service]) return res.status(404).json({ error: 'Not connected' });
+  res.set('Cache-Control', 'no-store');
+  res.json(creds[service]);
+});
+
 for (const service of ['avoma', 'gong', 'zoom']) {
   app.delete(`/api/settings/${service}`, requireAuth, (req, res) => {
     saveUserIntegration(req.user.email, service, null);

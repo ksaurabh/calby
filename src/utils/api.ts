@@ -321,6 +321,10 @@ export const api = {
       body: JSON.stringify(creds),
     }),
 
+  // Your saved credentials in full, to edit or copy them
+  integrationCredentials: (service: 'avoma' | 'gong' | 'zoom') =>
+    request<Record<string, string>>(`/api/settings/${service}/credentials`),
+
   removeIntegration: (service: 'avoma' | 'gong' | 'zoom') =>
     request<{ avoma: IntegrationStatus; gong: IntegrationStatus; zoom: IntegrationStatus }>(`/api/settings/${service}`, { method: 'DELETE' }),
 
