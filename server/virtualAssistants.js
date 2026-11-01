@@ -127,9 +127,10 @@ Read their email and do what they ask, then write your reply.
 What you can do:
 - Answer questions, draft text, summarise, plan, calculate — anything you can do
   by writing a reply.
-- Answer questions about their calendar and their booking links, using only the
-  calendar data provided below (when there is any). Never invent meetings or
-  availability.
+- Look at their calendar and their open booking times with your tools, when the
+  request needs it. Fetch only the dates you need. Answer only from what the
+  tools return — never invent meetings or availability. Don't fetch the calendar
+  for requests that have nothing to do with it.
 - Use the notes they have written for you (when there are any). Treat them as
   their own facts, preferences and standing instructions, and follow them unless
   the email itself says otherwise.
@@ -158,47 +159,105 @@ function emailText({ sender, subject, date, body }) {
   ].filter(v => v !== null).join('\n');
 }
 
+const MAX_MODEL_CALLS = 6;
+const MAX_TOOL_RESULT_CHARS = 60_000;
+
+function responseSummary(response) {
+  return {
+    id: response.id,
+    model: response.model,
+    stop_reason: response.stop_reason,
+    usage: response.usage,
+    content: response.content,
+  };
+}
+
 /**
  * The assistant's answer to one request. Used for real email and for the
- * in-app chat alike — same prompt, same context — so chatting shows exactly
- * how the assistant would reply by email.
+ * in-app chat alike — same prompt, same tools — so chatting shows exactly how
+ * the assistant would reply by email.
  *
  * `history` is earlier turns of the same conversation:
  *   [{ role: 'user' | 'assistant', content }]
+ * `toolkit` is { context, tools: [{ definition, run(input) }] }: facts that go
+ * in the prompt, and tools the model may call to fetch more (the calendar).
+ *
+ * Returns { text, trace }, where the trace holds every model call made — the
+ * exact request sent and the response — in order.
  */
 export async function writeReply({
-  assistant, sender, subject, date, body, history = [], senderContext, keyInfo, feature = 'virtual-assistant',
+  assistant, sender, subject, date, body, history = [], toolkit = { context: null, tools: [] },
+  keyInfo, feature = 'virtual-assistant',
 }) {
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 
   const system = [{ type: 'text', text: systemPrompt(assistant, sender, today) }];
-  if (senderContext) {
-    system.push({ type: 'text', text: `Data about ${sender.email}:\n\n${senderContext}` });
+  if (toolkit.context) {
+    system.push({ type: 'text', text: `About ${sender.email}:\n\n${toolkit.context}` });
   }
+  const tools = toolkit.tools || [];
+  const definitions = tools.map(t => t.definition);
 
-  const earlier = history
-    .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content)
-    .slice(-20)
-    .map(m => ({
-      role: m.role,
-      content: m.role === 'user' ? emailText({ sender, subject, body: m.content }) : m.content,
-    }));
-
-  // Built once and kept: this exact object is what goes to the API, and is
-  // what the chat's "full trace" shows.
-  const request = {
-    model: 'claude-opus-5',
-    max_tokens: 4000,
-    system,
-    messages: [...earlier, { role: 'user', content: emailText({ sender, subject, date, body }) }],
-  };
+  const messages = [
+    ...history
+      .filter(m => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content)
+      .slice(-20)
+      .map(m => ({
+        role: m.role,
+        content: m.role === 'user' ? emailText({ sender, subject, body: m.content }) : m.content,
+      })),
+    { role: 'user', content: emailText({ sender, subject, date, body }) },
+  ];
 
   const startedAt = Date.now();
-  const response = await callClaude(request, {
-    apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature,
-  });
+  const calls = [];
+  let response;
+  for (let step = 0; step < MAX_MODEL_CALLS; step++) {
+    const last = step === MAX_MODEL_CALLS - 1;
+    // Each request is kept exactly as sent: a snapshot of the conversation so
+    // far, including earlier tool calls and their results.
+    const request = {
+      model: 'claude-opus-5',
+      max_tokens: 4000,
+      system,
+      messages: [...messages],
+      ...(definitions.length ? { tools: definitions } : {}),
+      // On the last allowed call, make it answer with what it has.
+      ...(definitions.length && last ? { tool_choice: { type: 'none' } } : {}),
+    };
+    const callStarted = Date.now();
+    response = await callClaude(request, {
+      apiKey: keyInfo.key, email: sender.email, keySource: keyInfo.source, feature,
+    });
+    calls.push({
+      at: new Date(callStarted).toISOString(),
+      durationMs: Date.now() - callStarted,
+      request,
+      response: responseSummary(response),
+    });
+
+    const toolUses = response.content.filter(b => b.type === 'tool_use');
+    if (response.stop_reason !== 'tool_use' || !toolUses.length) break;
+
+    messages.push({ role: 'assistant', content: response.content });
+    const results = [];
+    for (const use of toolUses) {
+      const tool = tools.find(t => t.definition.name === use.name);
+      try {
+        if (!tool) throw new Error(`Unknown tool ${use.name}`);
+        let output = String(await tool.run(use.input || {}));
+        if (output.length > MAX_TOOL_RESULT_CHARS) {
+          output = `${output.slice(0, MAX_TOOL_RESULT_CHARS)}\n[…truncated — ask for fewer days]`;
+        }
+        results.push({ type: 'tool_result', tool_use_id: use.id, content: output });
+      } catch (err) {
+        results.push({ type: 'tool_result', tool_use_id: use.id, content: err.message, is_error: true });
+      }
+    }
+    messages.push({ role: 'user', content: results });
+  }
 
   const text = response.content
     .filter(block => block.type === 'text')
@@ -212,14 +271,7 @@ export async function writeReply({
       at: new Date(startedAt).toISOString(),
       durationMs: Date.now() - startedAt,
       keySource: keyInfo.source || null,
-      request,
-      response: {
-        id: response.id,
-        model: response.model,
-        stop_reason: response.stop_reason,
-        usage: response.usage,
-        content: response.content,
-      },
+      calls,
     },
   };
 }
@@ -232,7 +284,7 @@ const running = new Set();
 /**
  * Check one assistant's inbox and answer what's new. `deps` comes from the
  * server so this module needn't know how users and keys are stored:
- *   findUser(email), anthropicKeyFor(email), senderContext(email) -> string|null
+ *   findUser(email), anthropicKeyFor(email), toolkit(email) -> { context, tools }
  */
 export async function checkAssistant(assistantId, deps) {
   if (running.has(assistantId)) return { skipped: 'already running' };
@@ -321,19 +373,14 @@ async function checkAssistantInner(assistantId, deps) {
     }
 
     try {
-      let senderContext = null;
-      try {
-        senderContext = await deps.senderContext(sender.email);
-      } catch (err) {
-        console.error(`[va] context for ${sender.email} failed:`, err.message);
-      }
+      const toolkit = deps.toolkit(sender.email);
       const { text: reply } = await writeReply({
         assistant,
         sender: { email: sender.email, name: sender.name || user.name || '' },
         subject: message.subject,
         date: message.date,
         body: message.body,
-        senderContext,
+        toolkit,
         keyInfo,
       });
       if (!reply) throw new Error('The model returned an empty reply');

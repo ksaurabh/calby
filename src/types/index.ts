@@ -65,17 +65,17 @@ export interface AssistantChatMessage {
   versions?: AssistantChatVersion[];
 }
 
-/** Exactly what was sent to the model for one response, and what came back. */
-export interface LlmTrace {
-  version: number;
+/** Exactly what was sent to the model for one call, and what came back. */
+export interface LlmCall {
   at: string;
   durationMs: number;
-  keySource: string | null;
   request: {
     model: string;
     max_tokens: number;
     system: { type: string; text: string; cache_control?: unknown }[];
     messages: { role: string; content: unknown }[];
+    tools?: { name: string; description: string; input_schema: unknown }[];
+    tool_choice?: unknown;
   };
   response: {
     id: string;
@@ -93,6 +93,16 @@ export interface LlmTrace {
     cacheReadUsd: number;
     totalUsd: number;
   };
+}
+
+/** Every model call made to produce one chat response, in order. */
+export interface LlmTrace {
+  version: number;
+  at: string;
+  durationMs: number;
+  keySource: string | null;
+  calls: LlmCall[];
+  totalUsd: number;
 }
 
 export interface AssistantChatSummary {

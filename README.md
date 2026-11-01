@@ -93,7 +93,12 @@ English, and share a booking link that writes real invites to your calendar.
   reply. Sessions are kept per user in `server/chat-sessions.json`. *Notes* are
   your own facts, preferences and standing instructions; every note (newest
   first, up to ~40k characters) is sent as context whenever you email or chat
-  with the assistant.
+  with the assistant. The calendar is *not* sent up front: the assistant has
+  two tools — `get_calendar_events` (a date range, at most 31 days) and
+  `find_open_times` (open slots on one booking link) — and fetches only the
+  days a request needs, so unrelated requests carry no calendar at all. Every
+  response can be regenerated, and its *Full trace* shows each model call in
+  the loop exactly as sent, with tool calls, tool results and cost.
 - **Cancel and reschedule.** Every invite carries two links — `/reschedule/<token>`
   and `/cancel/<token>` — held by a 32-character per-booking token, so the guest
   can change the meeting without an account. Rescheduling patches the existing

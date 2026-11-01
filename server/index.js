@@ -28,6 +28,8 @@ import {
   reviewSlots,
   slotIsAvailable,
   slotsInBusinessDays,
+  zonedParts,
+  zonedTimeToUtc,
 } from './scheduling.js';
 import { costOf, priceFor, usageEntries } from './llm.js';
 import {
@@ -2074,65 +2076,172 @@ function findManagedAssistant(req, res) {
   return assistant;
 }
 
-// What the assistant may know about whoever emailed it: their own calendar
-// (titles included — it is their data, and they are the only recipient of the
-// reply) and their booking links with the next open times.
-async function assistantSenderContext(email) {
-  const calendar = calendarFor(email);
-  const timezone = ownerTimezone(email);
-  const sections = [];
+// What the assistant knows about whoever wrote to it. Small, always-relevant
+// facts (notes, timezone, the list of booking links) go in the prompt; the
+// calendar is large, so the model fetches only the dates it needs, through
+// tools, and only when the request calls for it.
+const CALENDAR_TOOL_MAX_DAYS = 31;
+const OPEN_TIMES_MAX = 30;
 
+function renderNotes(email) {
   const notes = notesFor(email);
-  if (notes.length) {
-    let budget = NOTES_CONTEXT_CHARS;
-    const rendered = [];
-    for (const note of notes) {
-      const text = `- ${note.title ? `${note.title}: ` : ''}${note.body}`;
-      if (text.length > budget) break;
-      rendered.push(text);
-      budget -= text.length;
-    }
-    sections.push(`Notes they have written for you (${rendered.length} of ${notes.length}):\n${rendered.join('\n')}`);
+  if (!notes.length) return null;
+  let budget = NOTES_CONTEXT_CHARS;
+  const rendered = [];
+  for (const note of notes) {
+    const text = `- ${note.title ? `${note.title}: ` : ''}${note.body}`;
+    if (text.length > budget) break;
+    rendered.push(text);
+    budget -= text.length;
   }
+  return `Notes they have written for you (${rendered.length} of ${notes.length}):\n${rendered.join('\n')}`;
+}
 
+// "2026-11-03" in a timezone -> the instant that day starts there.
+function startOfLocalDay(isoDate, timeZone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(isoDate || ''));
+  if (!match) return null;
+  return zonedTimeToUtc(Number(match[1]), Number(match[2]), Number(match[3]), 0, timeZone);
+}
+
+function addLocalDays(isoDate, days) {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Inclusive local date range -> [from, to) instants, validated.
+function localRange(input, timeZone, maxDays) {
+  const startDate = String(input.start_date || '');
+  const endDate = String(input.end_date || startDate);
+  const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T12:00:00Z`));
+  if (!isDate(startDate) || !isDate(endDate)) throw new Error('Dates must be YYYY-MM-DD.');
+  const from = startOfLocalDay(startDate, timeZone);
+  const to = startOfLocalDay(addLocalDays(endDate, 1), timeZone);
+  if (!from || !to || Number.isNaN(to.getTime())) {
+    throw new Error('Dates must be YYYY-MM-DD.');
+  }
+  if (to <= from) throw new Error('end_date must be on or after start_date.');
+  if ((to - from) / 86400_000 > maxDays + 1) {
+    throw new Error(`Ask for at most ${maxDays} days at a time.`);
+  }
+  return { from, to, startDate, endDate };
+}
+
+function assistantToolkit(email) {
+  const calendar = calendarFor(email);
+  const connected = !!calendar?.refreshToken;
+  const timezone = ownerTimezone(email);
   const eventTypes = getEventTypes().filter(e => e.ownerEmail === email.toLowerCase() && e.active);
+  const now = new Date();
+  const fmtNow = now.toLocaleString('en-US', {
+    timeZone: timezone, weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
+
+  const sections = [
+    `Their timezone is ${timezone}. Right now it is ${fmtNow} there (today is ${zonedParts(now, timezone).isoDate}).`,
+  ];
+  const notes = renderNotes(email);
+  if (notes) sections.push(notes);
   if (eventTypes.length) {
-    const lines = ['Their booking links (event types):'];
-    for (const eventType of eventTypes.slice(0, 5)) {
-      const durations = (eventType.rules.durationOptions?.length
-        ? eventType.rules.durationOptions
-        : [eventType.rules.durationMinutes]).join('/');
-      lines.push(`- "${externalNameOf(eventType)}" (internal name "${eventType.name}"), ${durations} min: ${PUBLIC_URL}/book/${eventType.slug}`);
-      if (!calendar?.refreshToken) continue;
-      try {
-        const { days } = await availabilityFor(eventType, { review: 'cached' });
-        const slots = days.flatMap(d => d.slots).slice(0, 12);
-        if (slots.length) {
+    sections.push([
+      'Their booking links (event types):',
+      ...eventTypes.map(e => {
+        const durations = (e.rules.durationOptions?.length ? e.rules.durationOptions : [e.rules.durationMinutes]).join('/');
+        return `- id ${e.id}: "${externalNameOf(e)}" (they call it "${e.name}"), ${durations} min — ${PUBLIC_URL}/book/${e.slug}`;
+      }),
+    ].join('\n'));
+  } else {
+    sections.push('They have no booking links set up.');
+  }
+  sections.push(connected
+    ? 'Their Google Calendar is connected: use the tools to look at it when the request needs it.'
+    : 'They have not connected a Google Calendar to Calby, so you cannot see their calendar or open times.');
+
+  const tools = [];
+  if (connected) {
+    tools.push({
+      definition: {
+        name: 'get_calendar_events',
+        description:
+          `Fetch the entries on their calendar between two dates (inclusive), in their timezone (${timezone}). ` +
+          'Returns each entry with title, times, organizer, guests and their responses, location and commitment type. ' +
+          `Ask only for the days the request needs; at most ${CALENDAR_TOOL_MAX_DAYS} days per call.`,
+        input_schema: {
+          type: 'object',
+          properties: {
+            start_date: { type: 'string', description: 'First day, YYYY-MM-DD' },
+            end_date: { type: 'string', description: 'Last day (inclusive), YYYY-MM-DD' },
+          },
+          required: ['start_date', 'end_date'],
+          additionalProperties: false,
+        },
+      },
+      run: async input => {
+        const { from, to, startDate, endDate } = localRange(input, timezone, CALENDAR_TOOL_MAX_DAYS);
+        const token = await accessTokenFor(email, calendar.refreshToken);
+        const events = await fetchEvents(token, from, to);
+        const commitmentTypes = getCommitmentTypes(email);
+        // Cached labels only — answering should not trigger classification calls.
+        const { assignments } = splitCached(events, commitmentTypes);
+        return `Calendar ${startDate} to ${endDate}:\n` +
+          buildCalendarContext({ events, timezone, commitmentTypes, assignments });
+      },
+    });
+
+    if (eventTypes.length) {
+      tools.push({
+        definition: {
+          name: 'find_open_times',
+          description:
+            'Find the times currently open for booking on one of their booking links — the slots a visitor ' +
+            'could pick right now, after their rules, calendar and colleagues are taken into account. ' +
+            'Optionally limit to a date range.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              event_type_id: { type: 'string', description: 'The id of the booking link, from the list in the prompt' },
+              start_date: { type: 'string', description: 'Optional first day, YYYY-MM-DD' },
+              end_date: { type: 'string', description: 'Optional last day (inclusive), YYYY-MM-DD' },
+              duration_minutes: { type: 'integer', description: 'Optional meeting length; must be one the link offers' },
+              limit: { type: 'integer', description: `How many times to return (max ${OPEN_TIMES_MAX}, default 10)` },
+            },
+            required: ['event_type_id'],
+            additionalProperties: false,
+          },
+        },
+        run: async input => {
+          const eventType = eventTypes.find(e => e.id === input.event_type_id);
+          if (!eventType) throw new Error('No booking link with that id.');
+          const durationMinutes = resolveDuration(eventType, input.duration_minutes);
+          if (!durationMinutes) throw new Error('That meeting length is not offered on this link.');
+          const { days } = await availabilityFor(eventType, { durationMinutes, review: 'cached' });
+          let slots = days.flatMap(d => d.slots);
+          if (input.start_date) {
+            const { from, to } = localRange(
+              { start_date: input.start_date, end_date: input.end_date || input.start_date },
+              timezone,
+              366
+            );
+            slots = slots.filter(s => new Date(s.start) >= from && new Date(s.start) < to);
+          }
+          const limit = Math.min(OPEN_TIMES_MAX, Math.max(1, Number(input.limit) || 10));
           const fmt = iso => new Date(iso).toLocaleString('en-US', {
             timeZone: timezone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
           });
-          lines.push(`  next open times (${timezone}): ${slots.map(s => fmt(s.start)).join('; ')}`);
-        }
-      } catch (err) {
-        lines.push(`  (open times unavailable: ${err.message})`);
-      }
+          if (!slots.length) return `No open ${durationMinutes}-minute times on "${externalNameOf(eventType)}" in that range.`;
+          return [
+            `Open ${durationMinutes}-minute times on "${externalNameOf(eventType)}" (${timezone}), ` +
+              `${Math.min(limit, slots.length)} of ${slots.length}:`,
+            ...slots.slice(0, limit).map(s => `- ${fmt(s.start)}`),
+          ].join('\n');
+        },
+      });
     }
-    sections.push(lines.join('\n'));
   }
 
-  if (calendar?.refreshToken) {
-    const { from, to } = calendarWindow({});
-    const token = await accessTokenFor(email, calendar.refreshToken);
-    const events = await fetchEvents(token, from, to);
-    const commitmentTypes = getCommitmentTypes(email);
-    // Cached labels only — answering an email should not trigger a batch of
-    // classification calls.
-    const { assignments } = splitCached(events, commitmentTypes);
-    sections.push(buildCalendarContext({ events, timezone, commitmentTypes, assignments }));
-  } else {
-    sections.push('They have not connected a Google Calendar to Calby, so you cannot see their calendar.');
-  }
-  return sections.join('\n\n');
+  return { context: sections.join('\n\n'), tools };
 }
 
 // ---------------------------------------------------------------------------
@@ -2211,7 +2320,7 @@ app.delete('/api/notes/:id', requireAuth, (req, res) => {
 const assistantDeps = {
   findUser,
   anthropicKeyFor,
-  senderContext: assistantSenderContext,
+  toolkit: assistantToolkit,
 };
 
 app.get('/api/virtual-assistants', requireAuth, (req, res) => {
@@ -2501,12 +2610,7 @@ function chatSetup(req, res, session) {
 
 // Generate the assistant's answer to `content`, given the turns before it.
 async function chatReply(req, { assistant, keyInfo, session, history, content }) {
-  let senderContext = null;
-  try {
-    senderContext = await assistantSenderContext(req.user.email);
-  } catch (err) {
-    console.error(`[chat] context for ${req.user.email} failed:`, err.message);
-  }
+  const toolkit = assistantToolkit(req.user.email);
   const user = findUser(req.user.email);
   return writeReply({
     assistant,
@@ -2514,7 +2618,7 @@ async function chatReply(req, { assistant, keyInfo, session, history, content })
     subject: chatSubject(session, content),
     body: content,
     history,
-    senderContext,
+    toolkit,
     keyInfo,
     feature: 'assistant-chat',
   });
@@ -2659,14 +2763,19 @@ app.get('/api/chat/sessions/:id/messages/:index/trace', requireAuth, (req, res) 
   if (!entry.trace) {
     return res.status(404).json({ error: 'This response was generated before traces were recorded.' });
   }
-  res.json({ version, ...entry.trace, cost: traceCost(entry.trace) });
+  // Traces from before tool use held a single call at the top level.
+  const { request, response, ...rest } = entry.trace;
+  const calls = (entry.trace.calls || [{ at: entry.trace.at, durationMs: entry.trace.durationMs, request, response }])
+    .map(call => ({ ...call, cost: callCost(call) }));
+  const totalUsd = calls.reduce((sum, call) => sum + call.cost.totalUsd, 0);
+  res.json({ version, ...rest, calls, totalUsd });
 });
 
 // What one call cost, priced exactly as the usage log prices it (Settings ›
 // cost), with each kind of token shown separately.
-function traceCost(trace) {
-  const model = trace.response?.model || trace.request?.model;
-  const usage = trace.response?.usage || {};
+function callCost(call) {
+  const model = call.response?.model || call.request?.model;
+  const usage = call.response?.usage || {};
   const part = (key) => costOf(model, { [key]: usage[key] || 0 });
   return {
     model,
