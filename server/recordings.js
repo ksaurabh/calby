@@ -136,14 +136,52 @@ const AVOMA_STATUS_FIELDS = ['state', 'status', 'processing_status', 'recording_
 const NOT_RECORDED = /not[\s_-]*recorded|no[\s_-]*recording|cancel|missed|skipp|scheduled|upcoming|future|declin|fail|denied|removed|no[\s_-]*show|did[\s_-]*not/i;
 const RECORDED = /complet|processed|ready|transcri|recorded|available|done|finished/i;
 
+/**
+ * Whether Avoma recorded a meeting, and the signal that decided it:
+ * { recorded: true | false | null, reason }.
+ */
+export function avomaRecordedWhy(m) {
+  const flagTrue = AVOMA_RECORDED_FLAGS.find(k => m?.[k] === true);
+  if (flagTrue) return { recorded: true, reason: `${flagTrue} = true` };
+  const id = AVOMA_RECORDED_IDS.find(k => m?.[k]);
+  if (id) return { recorded: true, reason: `${id} is set` };
+  const status = AVOMA_STATUS_FIELDS.find(k => typeof m?.[k] === 'string' && m[k]);
+  const notRecorded = AVOMA_STATUS_FIELDS.find(k => typeof m?.[k] === 'string' && NOT_RECORDED.test(m[k]));
+  if (notRecorded) return { recorded: false, reason: `${notRecorded} = ${m[notRecorded]}` };
+  const flagFalse = AVOMA_RECORDED_FLAGS.find(k => m?.[k] === false);
+  if (flagFalse) return { recorded: false, reason: `${flagFalse} = false` };
+  const recordedStatus = AVOMA_STATUS_FIELDS.find(k => typeof m?.[k] === 'string' && RECORDED.test(m[k]));
+  if (recordedStatus) return { recorded: true, reason: `${recordedStatus} = ${m[recordedStatus]}` };
+  return { recorded: null, reason: status ? `${status} = ${m[status]} (not recognised)` : 'no recording signal' };
+}
+
 export function avomaRecorded(m) {
-  if (AVOMA_RECORDED_FLAGS.some(k => m?.[k] === true)) return true;
-  if (AVOMA_RECORDED_IDS.some(k => m?.[k])) return true;
-  const statuses = AVOMA_STATUS_FIELDS.map(k => m?.[k]).filter(v => typeof v === 'string' && v);
-  if (statuses.some(v => NOT_RECORDED.test(v))) return false;
-  if (statuses.some(v => RECORDED.test(v))) return true;
-  if (AVOMA_RECORDED_FLAGS.some(k => m?.[k] === false)) return false;
-  return null;
+  return avomaRecordedWhy(m).recorded;
+}
+
+// Fields that carry meeting content, never shown in diagnostics.
+const AVOMA_CONTENT_FIELDS = /subject|title|name|description|agenda|notes|invite|summary|transcript_text|attendee|participant|invitee|email|url|link|organizer|host/i;
+
+/**
+ * The non-content fields of one Avoma meeting — flags, states, ids, counts,
+ * timestamps — to see exactly what Avoma says about whether it recorded it.
+ */
+export function avomaSignals(m) {
+  const out = {};
+  for (const [k, v] of Object.entries(m || {})) {
+    if (AVOMA_CONTENT_FIELDS.test(k)) continue;
+    if (v === null || typeof v === 'boolean' || typeof v === 'number') out[k] = v;
+    else if (typeof v === 'string' && v.length <= 80) out[k] = v;
+    else if (Array.isArray(v)) out[k] = `[${v.length} item${v.length === 1 ? '' : 's'}]`;
+    else if (typeof v === 'object') out[k] = `{${Object.keys(v).slice(0, 8).join(', ')}}`;
+  }
+  return out;
+}
+
+/** One Avoma meeting, read live — its detail can carry more than the list. */
+export async function avomaMeetingSignals(apiKey, uuid) {
+  const data = await avomaGet(apiKey, `/meetings/${encodeURIComponent(uuid)}/`);
+  return { signals: avomaSignals(data), ...avomaRecordedWhy(data) };
 }
 
 // What Avoma actually sent, for working out the recorded signal: every field
@@ -179,8 +217,9 @@ function avomaMeeting(m) {
     organizer: String(pick(m, ['organizer_email', 'host_email', 'organizer'])).toLowerCase(),
     attendees: avomaAttendees(m),
     state: pick(m, ['state', 'status', 'processing_status']) || '',
-    // true / false / null (Avoma didn't say).
-    recorded: avomaRecorded(m),
+    // true / false / null (Avoma didn't say), and the signal that decided it.
+    ...avomaRecordedWhy(m),
+    signals: avomaSignals(m),
   };
 }
 

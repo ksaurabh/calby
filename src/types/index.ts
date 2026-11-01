@@ -144,6 +144,9 @@ export interface Recording {
   attendees: { email: string; name: string; affiliation?: string }[];
   /** Avoma only: whether its notetaker recorded it; null when Avoma doesn't say. */
   recorded?: boolean | null;
+  /** Avoma only: the signal that decided `recorded`, and its non-content fields. */
+  reason?: string;
+  signals?: Record<string, string | number | boolean | null>;
   state?: string;
   /** Zoom only. */
   meetingNumber?: string | null;

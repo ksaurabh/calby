@@ -351,6 +351,14 @@ export const api = {
       ...(progressId ? { progress: progressId } : {}),
     })}`),
 
+  // What Avoma says about one meeting (live), to check its recorded status
+  avomaMeeting: (uuid: string) =>
+    request<{
+      signals: Record<string, string | number | boolean | null>;
+      recorded: boolean | null;
+      reason: string;
+    }>(`/api/recordings/avoma/${encodeURIComponent(uuid)}`),
+
   // Meetings you don't want flagged as unrecorded
   ignoreMeeting: (meeting: { eventId: string; title: string; start: string; recurringEventId: string | null; always: boolean }) =>
     request<{ ok: boolean; rule: IgnoreRule | null }>('/api/recordings/ignore', {

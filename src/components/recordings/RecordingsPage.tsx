@@ -170,7 +170,7 @@ function RecordingsTable({ label, source, data, timezone }: {
                   <th className="px-4 py-2 font-medium w-44">When</th>
                   <th className="px-4 py-2 font-medium">Meeting</th>
                   <th className="px-4 py-2 font-medium">Attendees</th>
-                  {isAvoma && <th className="px-4 py-2 font-medium w-32">Recorded?</th>}
+                  {isAvoma && <th className="px-4 py-2 font-medium w-56">Recorded?</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -185,13 +185,13 @@ function RecordingsTable({ label, source, data, timezone }: {
                       <span className="text-xs text-gray-400"> · {m.attendees.length}</span>
                     </td>
                     {isAvoma && (
-                      <td className="px-4 py-2 whitespace-nowrap" title={m.state ? `Avoma state: ${m.state}` : undefined}>
-                        {m.recorded === true ? (
-                          <span className="text-xs text-emerald-700">Recorded</span>
-                        ) : m.recorded === false ? (
-                          <span className="text-xs text-gray-500">Not recorded</span>
-                        ) : (
-                          <span className="text-xs text-amber-700">Not confirmed</span>
+                      <td className="px-4 py-2">
+                        <RecordedVerdict recorded={m.recorded} reason={m.reason} />
+                        {m.signals && (
+                          <details className="text-[11px] text-gray-500">
+                            <summary className="cursor-pointer">What Avoma says</summary>
+                            <SignalList signals={m.signals} />
+                          </details>
                         )}
                       </td>
                     )}
@@ -203,6 +203,7 @@ function RecordingsTable({ label, source, data, timezone }: {
           {isAvoma && source.diagnostics && source.meetings.length > 0 && (
             <details className="px-5 py-3 border-t border-gray-100 text-xs text-gray-500">
               <summary className="cursor-pointer">What Avoma sent (to check how it marks recordings)</summary>
+              <AvomaLookupBox />
               <p className="mt-2">
                 {unconfirmed > 0
                   ? `${unconfirmed} meeting${unconfirmed === 1 ? '' : 's'} had no recognisable recording signal and are shown as "Not confirmed" (still counted as recorded). `
@@ -224,6 +225,77 @@ function RecordingsTable({ label, source, data, timezone }: {
         </>
       )}
     </section>
+  );
+}
+
+type AvomaLookup = Awaited<ReturnType<typeof api.avomaMeeting>>;
+
+function SignalList({ signals }: { signals: Record<string, string | number | boolean | null> }) {
+  const entries = Object.entries(signals);
+  if (!entries.length) return <span className="text-gray-400">No status fields.</span>;
+  return (
+    <code className="font-mono text-[11px] text-gray-700 break-words">
+      {entries.map(([k, v]) => `${k}: ${v === null ? 'null' : String(v)}`).join(' · ')}
+    </code>
+  );
+}
+
+function RecordedVerdict({ recorded, reason }: { recorded: boolean | null | undefined; reason?: string }) {
+  return (
+    <>
+      {recorded === true ? (
+        <span className="text-xs text-emerald-700">Recorded</span>
+      ) : recorded === false ? (
+        <span className="text-xs text-gray-500">Not recorded</span>
+      ) : (
+        <span className="text-xs text-amber-700">Not confirmed</span>
+      )}
+      {reason && <div className="text-[11px] text-gray-400">{reason}</div>}
+    </>
+  );
+}
+
+// Ask Avoma live about one meeting — by pasting its link or id.
+function AvomaLookupBox() {
+  const [input, setInput] = useState('');
+  const [result, setResult] = useState<AvomaLookup | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const look = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const uuid = (input.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i) || [input.trim()])[0];
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      setResult(await api.avomaMeeting(uuid));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3">
+      <form onSubmit={look} className="flex gap-2 flex-wrap">
+        <input
+          className="flex-1 min-w-64 rounded-lg border border-gray-300 px-2 py-1.5 text-xs"
+          placeholder="Paste an Avoma meeting link to see what Avoma says about it"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+        />
+        <Button variant="secondary" className="!px-3 !py-1.5 text-xs" disabled={busy || !input.trim()}>
+          {busy ? 'Asking Avoma…' : 'Check'}
+        </Button>
+      </form>
+      {error && <div className="mt-2 text-red-700">{error}</div>}
+      {result && (
+        <div className="mt-2 rounded-md bg-gray-50 p-2 space-y-1">
+          <div><RecordedVerdict recorded={result.recorded} reason={result.reason} /></div>
+          <SignalList signals={result.signals} />
+        </div>
+      )}
+    </div>
   );
 }
 

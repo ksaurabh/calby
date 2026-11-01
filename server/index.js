@@ -52,6 +52,7 @@ import {
 import { canSealSecrets, decryptSecret, encryptSecret, maskSecret } from './secrets.js';
 import { gmailConsentUrl, gmailProfile } from './gmail.js';
 import {
+  avomaMeetingSignals,
   avomaMeetings,
   avomaProbe,
   findRecordings,
@@ -3378,6 +3379,20 @@ app.delete('/api/recordings/ignore-rules/:id', requireAuth, (req, res) => {
   ignores.rules = ignores.rules.filter(r => r.id !== req.params.id);
   saveIgnores(req.user.email, ignores);
   res.json({ ok: true });
+});
+
+// What Avoma says about one meeting, read live with your own key: its
+// non-content fields, and how they were read. For checking a meeting the page
+// marks as recorded when it wasn't (or the reverse).
+app.get('/api/recordings/avoma/:uuid', requireAuth, async (req, res) => {
+  const creds = recordingCredsFor(req.user.email);
+  if (!creds.avoma) return res.status(409).json({ error: 'Connect Avoma in Settings first.' });
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(req.params.uuid)) return res.status(400).json({ error: 'That is not an Avoma meeting id' });
+  try {
+    res.json(await avomaMeetingSignals(creds.avoma.apiKey, req.params.uuid));
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 const involves = (recording, email) =>
