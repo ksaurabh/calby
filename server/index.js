@@ -511,7 +511,7 @@ function saveCalendarFor(email, calendar) {
 // trigger a model call, and the page stays fast.
 async function availabilityFor(
   eventType,
-  { ignoreBookingId = null, durationMinutes = null, review = 'cached' } = {}
+  { ignoreBookingId = null, durationMinutes = null, review = 'cached', progress = () => {} } = {}
 ) {
   const calendar = calendarFor(eventType.ownerEmail);
   if (!calendar?.refreshToken) {
@@ -522,6 +522,8 @@ async function availabilityFor(
 
   const now = new Date();
   const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
+  const weeks = eventType.rules.horizonWeeks;
+  progress(`Reading your free/busy time for the next ${weeks} week${weeks === 1 ? '' : 's'}`);
   const token = await accessTokenFor(eventType.ownerEmail, calendar.refreshToken);
   let busy = await fetchBusy(token, now, horizonEnd);
 
@@ -535,6 +537,10 @@ async function availabilityFor(
   // their own stored credentials, so nobody's calendar is read without them
   // having connected it themselves — and only busy intervals come back, never
   // titles or attendees.
+  const colleagueCount = (eventType.colleagueEmails || []).length;
+  if (colleagueCount) {
+    progress(`Checking ${colleagueCount} colleague${colleagueCount === 1 ? '\'s' : 's\''} calendar${colleagueCount === 1 ? '' : 's'}`);
+  }
   const colleagues = await Promise.all(
     (eventType.colleagueEmails || []).map(async colleagueEmail => {
       const user = findUser(colleagueEmail);
@@ -561,11 +567,22 @@ async function availabilityFor(
   let events = [];
   let assignments = new Map();
   if (bookOver.length || apiKey) {
+    progress('Fetching your calendar entries');
     events = await fetchEvents(token, now, horizonEnd);
-    ({ assignments } =
-      review === 'compute'
-        ? await classifyEvents(events, commitmentTypes, { apiKey, email: eventType.ownerEmail })
-        : splitCached(events, commitmentTypes));
+    if (review === 'compute') {
+      const { pending } = splitCached(events, commitmentTypes);
+      if (pending.length && commitmentTypes.length) {
+        progress(`Classifying new calendar entries into commitment types (AI) — 0 of ${pending.length} done`);
+      }
+      ({ assignments } = await classifyEvents(events, commitmentTypes, {
+        apiKey,
+        email: eventType.ownerEmail,
+        onProgress: (done, total) =>
+          progress(`Classifying new calendar entries into commitment types (AI) — ${done} of ${total} done`),
+      }));
+    } else {
+      ({ assignments } = splitCached(events, commitmentTypes));
+    }
   }
 
   // One decision function: the generator diagnoses every candidate, and keeps
@@ -582,6 +599,9 @@ async function availabilityFor(
     bookOver,
     colleagues,
   };
+  progress(events.length
+    ? `Working out open slots around ${events.length} calendar entries`
+    : 'Working out open slots from your free/busy time');
   let { days, diagnoses } = generateSlots(slotInputs);
   const context = { ...slotInputs, diagnoses };
   if (!apiKey || !days.length) {
@@ -624,6 +644,8 @@ async function availabilityFor(
   }
   if (review !== 'compute') return { days, token, reviewNote: null, drops: [], ...context };
 
+  const candidateCount = days.reduce((n, d) => n + d.slots.length, 0);
+  progress(`Reviewing ${candidateCount} candidate slots against your commitments (AI)`);
   const result = await reviewSlots({
     guidance: eventType.guidance,
     rules: eventType.rules,
@@ -1266,6 +1288,42 @@ app.delete('/api/event-types/:id', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
+// Progress for slow requests. The client makes up an id, passes it with the
+// request, and polls /api/progress/:id while it runs, so a long wait shows
+// what is actually happening.
+const progressTracker = new Map();
+const PROGRESS_TTL = 10 * 60 * 1000;
+
+function progressFor(req) {
+  const id = typeof req.query.progress === 'string' ? req.query.progress.slice(0, 64) : null;
+  if (!id) return () => {};
+  for (const [key, entry] of progressTracker) {
+    if (entry.updatedAt < Date.now() - PROGRESS_TTL) progressTracker.delete(key);
+  }
+  const entry = { ownerEmail: req.user.email.toLowerCase(), startedAt: Date.now(), steps: [], updatedAt: Date.now() };
+  progressTracker.set(id, entry);
+  return message => {
+    const last = entry.steps[entry.steps.length - 1];
+    const now = Date.now();
+    // Repeated updates of one step (e.g. "3 of 40 done") replace its message.
+    const sameStep = last && message.split(' — ')[0] === last.message.split(' — ')[0];
+    if (sameStep) last.message = message;
+    else entry.steps.push({ message, at: now });
+    entry.updatedAt = now;
+  };
+}
+
+app.get('/api/progress/:id', requireAuth, (req, res) => {
+  const entry = progressTracker.get(req.params.id);
+  if (!entry || entry.ownerEmail !== req.user.email.toLowerCase()) {
+    return res.json({ steps: [], elapsedMs: 0 });
+  }
+  res.json({
+    steps: entry.steps.map(s => ({ message: s.message, offsetMs: s.at - entry.startedAt })),
+    elapsedMs: Date.now() - entry.startedAt,
+  });
+});
+
 // The owner's own preview: bookable slots plus the meetings already on their
 // calendar, so the two can be seen side by side.
 app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
@@ -1277,11 +1335,14 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
   const durationMinutes = resolveDuration(eventType, req.query.duration);
   if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
 
+  const progress = progressFor(req);
   try {
     const { days, token, reviewNote, drops } = await availabilityFor(eventType, {
       durationMinutes,
       review: 'compute',
+      progress,
     });
+    progress('Loading your meetings to show beside the slots');
     const now = new Date();
     const horizonEnd = new Date(now.getTime() + eventType.rules.horizonWeeks * 7 * 86400_000);
     // Event titles are the owner's own data — this route is behind requireAuth
@@ -1296,6 +1357,7 @@ app.get('/api/event-types/:id/availability', requireAuth, async (req, res) => {
       email: req.user.email,
       keySource: key.source,
     });
+    progress('Done');
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
     res.json({

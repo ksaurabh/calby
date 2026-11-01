@@ -154,7 +154,13 @@ export const api = {
   deleteEventType: (id: string) =>
     request<{ success: boolean }>(`/api/event-types/${id}`, { method: 'DELETE' }),
 
-  eventTypeAvailability: (id: string, durationMinutes?: number) =>
+  // Steps a slow request has gone through so far (see progressId params).
+  progress: (id: string) =>
+    request<{ steps: { message: string; offsetMs: number }[]; elapsedMs: number }>(
+      `/api/progress/${encodeURIComponent(id)}`
+    ),
+
+  eventTypeAvailability: (id: string, durationMinutes?: number, progressId?: string) =>
     request<{
       days: SlotDay[];
       rules: SchedulingRules;
@@ -164,7 +170,10 @@ export const api = {
       reviewNote: string | null;
       drops: { start: string; reason: string }[];
     }>(
-      `/api/event-types/${id}/availability${durationMinutes ? `?duration=${durationMinutes}` : ''}`
+      `/api/event-types/${id}/availability?${new URLSearchParams({
+        ...(durationMinutes ? { duration: String(durationMinutes) } : {}),
+        ...(progressId ? { progress: progressId } : {}),
+      })}`
     ),
 
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),

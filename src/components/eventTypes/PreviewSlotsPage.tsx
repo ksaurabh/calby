@@ -5,7 +5,8 @@ import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
 import { AvailabilityCalendar } from '../calendar';
 import { SuggestSlots } from './SuggestSlots';
-import { Button, Modal } from '../common';
+import { Button, Modal, ProgressSteps } from '../common';
+import type { ProgressStep } from '../common/ProgressSteps';
 
 interface Availability {
   days: SlotDay[];
@@ -37,10 +38,26 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   } | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
   const [pageOffset, setPageOffset] = useState(0);
+  // What the server is doing while the availability loads.
+  const [steps, setSteps] = useState<ProgressStep[]>([]);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
 
   const load = useCallback(async (durationMinutes?: number) => {
     setLoading(true);
     setError(null);
+    setSteps([]);
+    setStartedAt(Date.now());
+    const progressId = crypto.randomUUID();
+    let finished = false;
+    // Poll for the server's progress while the request runs.
+    const poll = setInterval(async () => {
+      try {
+        const progress = await api.progress(progressId);
+        if (!finished) setSteps(progress.steps);
+      } catch {
+        // Progress is best-effort; the request itself reports real errors.
+      }
+    }, 1500);
     try {
       const { eventTypes } = await api.listEventTypes();
       const found = eventTypes.find(e => e.id === eventTypeId) || null;
@@ -49,10 +66,12 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         setError('That event type no longer exists.');
         return;
       }
-      setAvailability(await api.eventTypeAvailability(eventTypeId, durationMinutes));
+      setAvailability(await api.eventTypeAvailability(eventTypeId, durationMinutes, progressId));
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      finished = true;
+      clearInterval(poll);
       setLoading(false);
     }
   }, [eventTypeId]);
@@ -115,7 +134,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
       <div className="max-w-7xl mx-auto">
         {header}
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center text-gray-500">
-          Checking your calendar…
+          <ProgressSteps steps={steps} startedAt={startedAt} idleLabel="Checking your calendar…" />
         </div>
       </div>
     );
@@ -152,6 +171,11 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
   return (
     <div className="max-w-7xl mx-auto">
       {header}
+      {loading && (
+        <div className="mb-4 rounded-xl border border-blue-100 bg-blue-50/50 px-6 py-4">
+          <ProgressSteps steps={steps} startedAt={startedAt} idleLabel="Refreshing…" />
+        </div>
+      )}
 
       {options.length > 1 && (
         <div className="flex items-center gap-2 flex-wrap mb-4">
