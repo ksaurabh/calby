@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { SavedTodoReport, TodoReport } from '../../types';
+import type { SavedTodoReport, TodoItem, TodoPriority, TodoReport } from '../../types';
 import { api } from '../../utils/api';
 import { Button, ProgressSteps } from '../common';
 import type { ProgressStep } from '../common/ProgressSteps';
@@ -14,7 +14,44 @@ const PRIORITY_STYLE = {
   high: 'bg-red-50 text-red-700',
   medium: 'bg-amber-50 text-amber-700',
   low: 'bg-gray-100 text-gray-600',
+  ignore: 'bg-gray-100 text-gray-400 line-through',
 };
+
+const PRIORITIES: TodoPriority[] = ['high', 'medium', 'low', 'ignore'];
+
+/** The priority chip; click it to choose high, medium, low or ignore. */
+function PriorityPicker({ value, onChange }: { value: TodoPriority; onChange: (p: TodoPriority) => void }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className={`ml-2 text-[11px] px-1.5 py-0.5 rounded hover:ring-1 hover:ring-gray-300 ${PRIORITY_STYLE[value]}`}
+        title="Change priority"
+        onClick={() => setOpen(true)}
+      >
+        {value}
+      </button>
+    );
+  }
+  return (
+    <span className="ml-2 inline-flex gap-1">
+      {PRIORITIES.map(p => (
+        <button
+          key={p}
+          type="button"
+          className={`text-[11px] px-1.5 py-0.5 rounded ${PRIORITY_STYLE[p]} ${p === value ? 'ring-1 ring-gray-500' : 'opacity-70 hover:opacity-100'}`}
+          onClick={() => {
+            setOpen(false);
+            if (p !== value) onChange(p);
+          }}
+        >
+          {p}
+        </button>
+      ))}
+    </span>
+  );
+}
 
 const SOURCE_LABEL = { avoma: 'Avoma', gong: 'Gong', zoom: 'Zoom' };
 
@@ -26,18 +63,48 @@ function when(iso: string, timeZone: string) {
 
 const smallButton = '!px-2 !py-1 text-xs';
 
-const countItems = (report: TodoReport) => report.meetings.reduce((n, m) => n + (m.items?.length || 0), 0);
+const isIgnored = (it: { priority: TodoPriority }) => it.priority === 'ignore';
+
+// ignore < low < medium < high
+const RANK: Record<TodoPriority, number> = { ignore: 0, low: 1, medium: 2, high: 3 };
+
+/** "all", "unset" (you haven't set it), "eq:<p>" or "gt:<p>". */
+type Filter = string;
+
+const FILTERS: { group?: string; options: { value: Filter; label: string }[] }[] = [
+  { options: [{ value: 'all', label: 'All tasks' }, { value: 'unset', label: 'Priority not set by you' }] },
+  { group: 'Priority is', options: PRIORITIES.map(p => ({ value: `eq:${p}`, label: `= ${p}` })) },
+  {
+    group: 'Priority above',
+    options: (['ignore', 'low', 'medium'] as TodoPriority[]).map(p => ({ value: `gt:${p}`, label: `> ${p}` })),
+  },
+];
+
+function matches(it: TodoItem, filter: Filter): boolean {
+  if (filter === 'unset') return !it.prioritySet;
+  const [op, p] = filter.split(':') as [string, TodoPriority];
+  if (op === 'eq') return it.priority === p;
+  if (op === 'gt') return RANK[it.priority] > RANK[p];
+  return true;
+}
+
+const countItems = (report: TodoReport) =>
+  report.meetings.reduce((n, m) => n + (m.items?.filter(it => !isIgnored(it)).length || 0), 0);
+
+const countDone = (report: TodoReport, done: Record<string, boolean>) =>
+  report.meetings.reduce((n, m, i) => n + (m.items?.filter((it, j) => !isIgnored(it) && done[`${i}-${j}`]).length || 0), 0);
 
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-function asText(report: TodoReport, done: Record<string, boolean> = {}): string {
+function asText(report: TodoReport, done: Record<string, boolean> = {}, filter: Filter = 'all'): string {
   const lines = [`To-dos from ${report.days === 1 ? 'the last day' : `the last ${report.days} days`} of meetings`, ''];
   for (const m of report.meetings) {
-    if (!m.items?.length) continue;
+    if (!m.items?.some(it => !isIgnored(it) && matches(it, filter))) continue;
     lines.push(`${m.title} — ${when(m.start, report.timezone)}`);
     const i = report.meetings.indexOf(m);
     for (const [j, it] of m.items.entries()) {
+      if (isIgnored(it) || !matches(it, filter)) continue;
       lines.push(`- [${done[`${i}-${j}`] ? 'x' : ' '}] ${it.task}${it.due ? ` (due ${it.due})` : ''}${it.priority === 'high' ? ' [high]' : ''}`);
     }
     lines.push('');
@@ -46,20 +113,31 @@ function asText(report: TodoReport, done: Record<string, boolean> = {}): string 
 }
 
 /** One report's meetings and items; ticking items is kept only for saved reports. */
-function ReportView({ report, done, onToggle, actions }: {
+function ReportView({ report, filter, done, onToggle, onPriority, actions }: {
   report: TodoReport;
+  filter: Filter;
   done?: Record<string, boolean>;
   onToggle?: (key: string, done: boolean) => void;
+  onPriority: (key: string, priority: TodoPriority) => void;
   actions: React.ReactNode;
 }) {
   const total = countItems(report);
-  const doneCount = done ? Object.keys(done).length : 0;
+  const doneCount = done ? countDone(report, done) : 0;
+  const ignored = report.meetings.reduce((n, m) => n + (m.items?.filter(isIgnored).length || 0), 0);
+  const filtering = filter !== 'all';
+  const shownCount = report.meetings.reduce((n, m) => n + (m.items?.filter(it => matches(it, filter)).length || 0), 0);
+  // While filtering, only meetings with a matching item are shown.
+  const visible = report.meetings
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => !filtering || m.items?.some(it => matches(it, filter)));
   return (
     <div className="border-t border-gray-100">
       <div className="px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500 bg-gray-50">
         <span>
           {total} to-do{total === 1 ? '' : 's'}
-          {done && total > 0 && ` (${doneCount} done)`} from {report.meetings.length} meeting
+          {done && total > 0 && ` (${doneCount} done)`}
+          {ignored > 0 && ` · ${ignored} ignored`}
+          {filtering && ` · ${shownCount} shown`} from {report.meetings.length} meeting
           {report.meetings.length === 1 ? '' : 's'} · {report.days === 1 ? 'last day' : `last ${report.days} days`} ·
           made {shortDate(report.generatedAt)}
           {' '}· ${report.costUsd < 0.01 ? report.costUsd.toFixed(4) : report.costUsd.toFixed(3)}
@@ -68,7 +146,10 @@ function ReportView({ report, done, onToggle, actions }: {
       </div>
 
       <div className="divide-y divide-gray-100">
-        {report.meetings.map((m, i) => (
+        {filtering && visible.length === 0 && (
+          <p className="px-5 py-3 text-sm text-gray-500">No tasks match this filter.</p>
+        )}
+        {visible.map(({ m, i }) => (
           <div key={i} className="px-5 py-3">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-medium text-gray-900">{m.title}</span>
@@ -88,23 +169,24 @@ function ReportView({ report, done, onToggle, actions }: {
             {m.items?.length ? (
               <ul className="mt-2 space-y-2">
                 {m.items.map((it, j) => {
+                  if (!matches(it, filter)) return null;
                   const key = `${i}-${j}`;
                   const checked = !!done?.[key];
+                  const off = isIgnored(it);
                   return (
-                    <li key={j} className="flex gap-2">
+                    <li key={j} className={`flex gap-2 ${off ? 'opacity-50' : ''}`}>
                       <input
                         type="checkbox"
                         className="mt-1"
                         aria-label={it.task}
+                        disabled={off}
                         {...(onToggle
                           ? { checked, onChange: e => onToggle(key, e.target.checked) }
                           : {})}
                       />
                       <div className="text-sm">
-                        <span className={checked ? 'text-gray-400 line-through' : 'text-gray-900'}>{it.task}</span>
-                        <span className={`ml-2 text-[11px] px-1.5 py-0.5 rounded ${PRIORITY_STYLE[it.priority]}`}>
-                          {it.priority}
-                        </span>
+                        <span className={checked || off ? 'text-gray-400 line-through' : 'text-gray-900'}>{it.task}</span>
+                        <PriorityPicker value={it.priority} onChange={p => onPriority(key, p)} />
                         {it.due && <span className="ml-2 text-xs text-gray-600">due {it.due}</span>}
                         {it.confidence === 'low' && (
                           <span className="ml-2 text-xs text-amber-700" title="The notes say 'we' — you may or may not own this">
@@ -158,6 +240,7 @@ export function TodoReportPanel() {
   const [steps, setSteps] = useState<ProgressStep[]>([]);
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  const [filter, setFilter] = useState<Filter>('all');
 
   // The last report you made is kept, and so are the ones you saved.
   useEffect(() => {
@@ -227,6 +310,41 @@ export function TodoReportPanel() {
     }
   };
 
+  const withPriority = (r: TodoReport, key: string, priority: TodoPriority): TodoReport => {
+    const [i, j] = key.split('-').map(Number);
+    return {
+      ...r,
+      meetings: r.meetings.map((m, mi) => mi !== i ? m : {
+        ...m,
+        items: m.items?.map((it, ij) => (ij === j ? { ...it, priority, prioritySet: true } : it)),
+      }),
+    };
+  };
+
+  // Show it at once; put it back if the server says no.
+  const prioritizeLatest = async (key: string, priority: TodoPriority) => {
+    if (!report) return;
+    const before = report;
+    setReport(withPriority(report, key, priority));
+    try {
+      await api.setTodoPriority(key, priority);
+    } catch (e) {
+      setReport(before);
+      setError((e as Error).message);
+    }
+  };
+
+  const prioritizeSaved = async (id: string, key: string, priority: TodoPriority) => {
+    const before = saved;
+    setSaved(list => list.map(s => (s.id === id ? { ...s, report: withPriority(s.report, key, priority) } : s)));
+    try {
+      await api.setSavedTodoPriority(id, key, priority);
+    } catch (e) {
+      setSaved(before);
+      setError((e as Error).message);
+    }
+  };
+
   const remove = async (entry: SavedTodoReport) => {
     if (!window.confirm(`Delete ${entry.name}?`)) return;
     setError(null);
@@ -241,7 +359,7 @@ export function TodoReportPanel() {
 
   const copy = async (r: TodoReport, done?: Record<string, boolean>) => {
     try {
-      await navigator.clipboard.writeText(asText(r, done));
+      await navigator.clipboard.writeText(asText(r, done, filter));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -252,7 +370,7 @@ export function TodoReportPanel() {
   const copyButton = (r: TodoReport, done?: Record<string, boolean>) =>
     countItems(r) > 0 && (
       <Button variant="ghost" className={smallButton} onClick={() => copy(r, done)}>
-        {copied ? 'Copied' : 'Copy as checklist'}
+        {copied ? 'Copied' : filter === 'all' ? 'Copy as checklist' : 'Copy shown as checklist'}
       </Button>
     );
 
@@ -286,6 +404,26 @@ export function TodoReportPanel() {
       )}
       {error && <div className="mx-5 mb-4 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</div>}
 
+      {!busy && (open || report) && (
+        <div className="px-5 py-2 border-t border-gray-100 flex items-center gap-2 text-xs text-gray-600">
+          <label htmlFor="todo-filter">Show</label>
+          <select
+            id="todo-filter"
+            className="rounded-lg border border-gray-300 px-2 py-1 text-xs"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+          >
+            {FILTERS.map((g, gi) => {
+              const opts = g.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>);
+              return g.group ? <optgroup key={gi} label={g.group}>{opts}</optgroup> : opts;
+            })}
+          </select>
+          {filter !== 'all' && (
+            <Button variant="ghost" className={smallButton} onClick={() => setFilter('all')}>Clear</Button>
+          )}
+        </div>
+      )}
+
       {!busy && open && (
         <>
           <div className="px-5 py-2 border-t border-gray-100 flex items-center justify-between gap-2 text-sm">
@@ -296,8 +434,10 @@ export function TodoReportPanel() {
           </div>
           <ReportView
             report={open.report}
+            filter={filter}
             done={open.done}
             onToggle={(key, done) => toggle(open.id, key, done)}
+            onPriority={(key, p) => prioritizeSaved(open.id, key, p)}
             actions={copyButton(open.report, open.done)}
           />
         </>
@@ -306,6 +446,8 @@ export function TodoReportPanel() {
       {!busy && !open && report && (
         <ReportView
           report={report}
+          filter={filter}
+          onPriority={prioritizeLatest}
           actions={
             <>
               {copyButton(report)}
@@ -329,7 +471,7 @@ export function TodoReportPanel() {
           <ul className="divide-y divide-gray-100">
             {saved.map(s => {
               const total = countItems(s.report);
-              const doneCount = Object.keys(s.done).length;
+              const doneCount = countDone(s.report, s.done);
               return (
                 <li key={s.id} className={`px-5 py-2 flex flex-wrap items-center justify-between gap-2 ${s.id === openId ? 'bg-blue-50' : ''}`}>
                   <div className="text-sm">

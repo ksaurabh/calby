@@ -196,11 +196,16 @@ export interface ZoomSummary {
   costUsd: number;
 }
 
+export type TodoPriority = 'high' | 'medium' | 'low' | 'ignore';
+
 /** Action items for you, from Avoma notes and Gong highlights. */
 export interface TodoItem {
   task: string;
   due: string | null;
-  priority: 'high' | 'medium' | 'low';
+  /** 'ignore' is yours to set: hidden from the count and the checklist. */
+  priority: TodoPriority;
+  /** True once you've set the priority yourself (otherwise it's the model's guess). */
+  prioritySet?: boolean;
   /** low when ownership was inferred ("we'll send…"). */
   confidence: 'high' | 'low';
   evidence: string;

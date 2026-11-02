@@ -2,6 +2,7 @@ import type {
   ZoomSummary,
   TodoReport,
   SavedTodoReport,
+  TodoPriority,
   IgnoreRule,
   IntegrationStatus,
   AttendedMeeting,
@@ -393,6 +394,18 @@ export const api = {
     request<{ saved: SavedTodoReport }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify({ key, done }),
+    }),
+
+  setTodoPriority: (key: string, priority: TodoPriority) =>
+    request<{ report: TodoReport }>('/api/recordings/todos/priority', {
+      method: 'PATCH',
+      body: JSON.stringify({ key, priority }),
+    }),
+
+  setSavedTodoPriority: (id: string, key: string, priority: TodoPriority) =>
+    request<{ saved: SavedTodoReport }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}/priority`, {
+      method: 'PATCH',
+      body: JSON.stringify({ key, priority }),
     }),
 
   deleteSavedTodoReport: (id: string) =>

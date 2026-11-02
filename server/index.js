@@ -3495,6 +3495,43 @@ app.patch('/api/recordings/todos/saved/:id', requireAuth, (req, res) => {
   res.json({ saved: entry });
 });
 
+// Your priority for one item: high, medium, low, or ignore (hidden from the
+// count and the checklist). Items are keyed "<meeting index>-<item index>".
+const TODO_PRIORITIES = ['high', 'medium', 'low', 'ignore'];
+
+function setItemPriority(report, key, priority) {
+  if (typeof key !== 'string' || !/^\d+-\d+$/.test(key)) return 'Bad item key.';
+  if (!TODO_PRIORITIES.includes(priority)) return 'Priority must be high, medium, low or ignore.';
+  const [i, j] = key.split('-').map(Number);
+  const item = report.meetings[i]?.items?.[j];
+  if (!item) return 'No such item.';
+  item.priority = priority;
+  item.prioritySet = true;
+  return null;
+}
+
+app.patch('/api/recordings/todos/priority', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const report = store.reports[email];
+  if (!report) return res.status(404).json({ error: 'No to-do report yet.' });
+  const problem = setItemPriority(report, req.body?.key, req.body?.priority);
+  if (problem) return res.status(400).json({ error: problem });
+  writeTodoStore(store);
+  res.json({ report });
+});
+
+app.patch('/api/recordings/todos/saved/:id/priority', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const entry = (store.saved[email] || []).find(s => s.id === req.params.id);
+  if (!entry) return res.status(404).json({ error: 'No such saved report.' });
+  const problem = setItemPriority(entry.report, req.body?.key, req.body?.priority);
+  if (problem) return res.status(400).json({ error: problem });
+  writeTodoStore(store);
+  res.json({ saved: entry });
+});
+
 app.delete('/api/recordings/todos/saved/:id', requireAuth, (req, res) => {
   const email = req.user.email.toLowerCase();
   const store = todoStore();
