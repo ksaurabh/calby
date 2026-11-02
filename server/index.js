@@ -1779,6 +1779,39 @@ function findBySlug(slug) {
   return getEventTypes().find(e => e.slug === slug && e.active);
 }
 
+// Quick preview: exactly what the public link offers (same rules, the same
+// cached-review mode, never a model call), next to your own calendar entries.
+// It reads the calendar from the recent snapshot, so it's fast; `refresh=1`
+// re-reads Google.
+app.get('/api/event-types/:id/quick-preview', requireAuth, async (req, res) => {
+  const eventType = ownEventType(req);
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  const durationMinutes = resolveDuration(eventType, req.query.duration);
+  if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
+  try {
+    const availability = await availabilityFor(eventType, {
+      durationMinutes,
+      review: 'cached',
+      calendarCache: req.query.refresh === '1' ? 'refresh' : 'use',
+    });
+    const owner = findUser(eventType.ownerEmail);
+    const assignments = availability.assignments || new Map();
+    res.json({
+      eventType: publicEventType(eventType, owner?.name || 'the host', durationMinutes),
+      active: !!eventType.active,
+      slug: eventType.slug,
+      days: availability.days,
+      // Owner-only: this route is behind requireAuth and scoped to your own event types.
+      events: (availability.events || []).map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
+      busy: (availability.busy || []).map(b => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() })),
+      commitmentTypes: getCommitmentTypes(eventType.ownerEmail),
+      calendarFetchedAt: new Date(availability.calendarFetchedAt).toISOString(),
+    });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
 app.get('/api/book/:slug', async (req, res) => {
   const eventType = findBySlug(req.params.slug);
   if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });

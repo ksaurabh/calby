@@ -267,6 +267,9 @@ export function EventTypesPage() {
                 <Button variant="secondary" onClick={() => copyLink(eventType)}>
                   {copied === eventType.id ? 'Copied' : 'Copy link'}
                 </Button>
+                <Button variant="secondary" onClick={() => navigate(`/quick-preview/${eventType.id}`)}>
+                  Quick preview
+                </Button>
                 <a
                   href={`/book/${eventType.slug}`}
                   target="_blank"

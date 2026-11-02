@@ -4,7 +4,7 @@ import type { View } from './types/view';
 import { ALL_VIEWS } from './types/view';
 import { Layout, Header } from './components/layout';
 import { OrgsPage } from './components/orgs';
-import { EventTypesPage, PreviewSlotsPage } from './components/eventTypes';
+import { EventTypesPage, PreviewSlotsPage, QuickPreviewPage } from './components/eventTypes';
 import { CommitmentTypesPage } from './components/commitments';
 import { SettingsPage } from './components/settings';
 import { BookingPage, ManageBookingPage } from './components/booking';
@@ -28,6 +28,12 @@ function bookingSlug(pathname: string): string | null {
 /** /preview/<eventTypeId> is the full-page availability preview. */
 function previewEventTypeId(pathname: string): string | null {
   const match = pathname.match(/^\/preview\/([A-Za-z0-9_-]+)\/?$/);
+  return match ? match[1] : null;
+}
+
+/** /quick-preview/<eventTypeId>: the link as guests see it, beside your calendar. */
+function quickPreviewEventTypeId(pathname: string): string | null {
+  const match = pathname.match(/^\/quick-preview\/([A-Za-z0-9_-]+)\/?$/);
   return match ? match[1] : null;
 }
 
@@ -81,6 +87,18 @@ function AppContent() {
         <Header />
         <main className="flex-1 p-6 w-full">
           <PreviewSlotsPage eventTypeId={previewId} />
+        </main>
+      </div>
+    );
+  }
+
+  const quickId = quickPreviewEventTypeId(pathname);
+  if (quickId) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        <Header />
+        <main className="flex-1 p-6 w-full">
+          <QuickPreviewPage eventTypeId={quickId} />
         </main>
       </div>
     );

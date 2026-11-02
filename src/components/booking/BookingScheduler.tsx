@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { SlotDay } from '../../types';
 import { dateKeyInZone } from '../../utils/calendar';
 import { MonthCalendar } from './MonthCalendar';
@@ -13,6 +13,8 @@ interface BookingSchedulerProps {
   onSelect: (start: string) => void;
   /** Rendered under the chosen time — the "Next" step. */
   action?: React.ReactNode;
+  /** Told which day (YYYY-MM-DD in `timezone`) is showing. */
+  onDateChange?: (date: string | null) => void;
 }
 
 /**
@@ -28,6 +30,7 @@ export function BookingScheduler({
   selected,
   onSelect,
   action,
+  onDateChange,
 }: BookingSchedulerProps) {
   const byDate = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -50,6 +53,10 @@ export function BookingScheduler({
   // Derived rather than synced: changing timezone or duration can remove the
   // day that was picked, and the first available day is the right fallback.
   const selectedDate = pickedDate && availableDates.has(pickedDate) ? pickedDate : firstDate;
+
+  useEffect(() => {
+    onDateChange?.(selectedDate);
+  }, [selectedDate, onDateChange]);
 
   const visibleMonth = useMemo(() => {
     if (monthOverride) return monthOverride;

@@ -203,6 +203,24 @@ export const api = {
       { method: 'POST', body: JSON.stringify(options) }
     ),
 
+  // What the public link shows, plus your calendar — fast, from the recent copy.
+  quickPreview: (id: string, options: { durationMinutes?: number; refresh?: boolean } = {}) => {
+    const q = new URLSearchParams();
+    if (options.durationMinutes) q.set('duration', String(options.durationMinutes));
+    if (options.refresh) q.set('refresh', '1');
+    const qs = q.toString();
+    return request<{
+      eventType: PublicEventType;
+      active: boolean;
+      slug: string;
+      days: SlotDay[];
+      events: CalendarEvent[];
+      busy: { start: string; end: string }[];
+      commitmentTypes: CommitmentType[];
+      calendarFetchedAt: string;
+    }>(`/api/event-types/${id}/quick-preview${qs ? `?${qs}` : ''}`);
+  },
+
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
   suggestSlots: (
