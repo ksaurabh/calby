@@ -23,15 +23,28 @@ const PRIORITIES: TodoPriority[] = ['high', 'medium', 'low', 'ignore'];
 function PriorityPicker({ value, onChange }: { value: TodoPriority; onChange: (p: TodoPriority) => void }) {
   const [open, setOpen] = useState(false);
   if (!open) {
+    // The priority, and "ignore" always one click away.
     return (
-      <button
-        type="button"
-        className={`ml-2 text-[11px] px-1.5 py-0.5 rounded hover:ring-1 hover:ring-gray-300 ${PRIORITY_STYLE[value]}`}
-        title="Change priority"
-        onClick={() => setOpen(true)}
-      >
-        {value}
-      </button>
+      <span className="ml-2 inline-flex gap-1">
+        <button
+          type="button"
+          className={`text-[11px] px-1.5 py-0.5 rounded hover:ring-1 hover:ring-gray-300 ${PRIORITY_STYLE[value]}`}
+          title="Change priority"
+          onClick={() => setOpen(true)}
+        >
+          {value === 'ignore' ? 'ignored' : value}
+        </button>
+        {value !== 'ignore' && (
+          <button
+            type="button"
+            className="text-[11px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-100"
+            title="Ignore this task"
+            onClick={() => onChange('ignore')}
+          >
+            ignore
+          </button>
+        )}
+      </span>
     );
   }
   return (
