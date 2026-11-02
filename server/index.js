@@ -3476,10 +3476,25 @@ app.post('/api/recordings/todos/saved', requireAuth, (req, res) => {
   const names = new Set(mine.map(s => s.name));
   let name = base;
   for (let n = 2; names.has(name); n += 1) name = `${base}-${n}`;
-  const entry = { id: randomBytes(8).toString('hex'), name, savedAt: new Date().toISOString(), report, done: {} };
+  const entry = { id: randomBytes(8).toString('hex'), name, savedAt: new Date().toISOString(), report, done: { ...(report.done || {}) } };
   store.saved[email] = [...mine, entry];
   writeTodoStore(store);
   res.json({ saved: entry });
+});
+
+// Mark a task on your latest report done (or not).
+app.patch('/api/recordings/todos/done', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const report = store.reports[email];
+  if (!report) return res.status(404).json({ error: 'No to-do report yet.' });
+  const { key, done } = req.body || {};
+  if (typeof key !== 'string' || !/^\d+-\d+$/.test(key)) return res.status(400).json({ error: 'Bad item key.' });
+  report.done = report.done || {};
+  if (done) report.done[key] = true;
+  else delete report.done[key];
+  writeTodoStore(store);
+  res.json({ report });
 });
 
 app.patch('/api/recordings/todos/saved/:id', requireAuth, (req, res) => {

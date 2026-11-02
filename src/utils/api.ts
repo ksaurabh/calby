@@ -390,6 +390,12 @@ export const api = {
   saveTodoReport: () =>
     request<{ saved: SavedTodoReport }>('/api/recordings/todos/saved', { method: 'POST' }),
 
+  markLatestTodo: (key: string, done: boolean) =>
+    request<{ report: TodoReport }>('/api/recordings/todos/done', {
+      method: 'PATCH',
+      body: JSON.stringify({ key, done }),
+    }),
+
   markTodo: (id: string, key: string, done: boolean) =>
     request<{ saved: SavedTodoReport }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}`, {
       method: 'PATCH',

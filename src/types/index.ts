@@ -229,6 +229,8 @@ export interface TodoReport {
   skipped: TodoReportMeeting[];
   errors: string[];
   costUsd: number;
+  /** Tasks you've marked done, keyed "<meeting index>-<item index>". */
+  done?: Record<string, boolean>;
 }
 
 /** A to-do report you saved, named todo-report-<date>. */

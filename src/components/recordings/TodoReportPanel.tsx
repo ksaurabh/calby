@@ -129,13 +129,13 @@ function asText(report: TodoReport, done: Record<string, boolean> = {}, filter: 
 function ReportView({ report, filter, done, onToggle, onPriority, actions }: {
   report: TodoReport;
   filter: Filter;
-  done?: Record<string, boolean>;
-  onToggle?: (key: string, done: boolean) => void;
+  done: Record<string, boolean>;
+  onToggle: (key: string, done: boolean) => void;
   onPriority: (key: string, priority: TodoPriority) => void;
   actions: React.ReactNode;
 }) {
   const total = countItems(report);
-  const doneCount = done ? countDone(report, done) : 0;
+  const doneCount = countDone(report, done);
   const ignored = report.meetings.reduce((n, m) => n + (m.items?.filter(isIgnored).length || 0), 0);
   const filtering = filter !== 'all';
   const shownCount = report.meetings.reduce((n, m) => n + (m.items?.filter(it => matches(it, filter)).length || 0), 0);
@@ -148,7 +148,7 @@ function ReportView({ report, filter, done, onToggle, onPriority, actions }: {
       <div className="px-5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500 bg-gray-50">
         <span>
           {total} to-do{total === 1 ? '' : 's'}
-          {done && total > 0 && ` (${doneCount} done)`}
+          {total > 0 && ` (${doneCount} done)`}
           {ignored > 0 && ` · ${ignored} ignored`}
           {filtering && ` · ${shownCount} shown`} from {report.meetings.length} meeting
           {report.meetings.length === 1 ? '' : 's'} · {report.days === 1 ? 'last day' : `last ${report.days} days`} ·
@@ -184,19 +184,25 @@ function ReportView({ report, filter, done, onToggle, onPriority, actions }: {
                 {m.items.map((it, j) => {
                   if (!matches(it, filter)) return null;
                   const key = `${i}-${j}`;
-                  const checked = !!done?.[key];
+                  const checked = !!done[key];
                   const off = isIgnored(it);
                   return (
                     <li key={j} className={`flex gap-2 ${off ? 'opacity-50' : ''}`}>
-                      <input
-                        type="checkbox"
-                        className="mt-1"
-                        aria-label={it.task}
-                        disabled={off}
-                        {...(onToggle
-                          ? { checked, onChange: e => onToggle(key, e.target.checked) }
-                          : {})}
-                      />
+                      <div className="shrink-0 w-16 pt-0.5">
+                        {!off && (
+                          <button
+                            type="button"
+                            className={`w-full text-xs px-2 py-0.5 rounded border ${checked
+                              ? 'border-green-200 bg-green-50 text-green-700'
+                              : 'border-gray-300 text-gray-700 hover:bg-gray-100'}`}
+                            title={checked ? 'Marked done — click to undo' : 'Mark this task done'}
+                            aria-pressed={checked}
+                            onClick={() => onToggle(key, !checked)}
+                          >
+                            {checked ? '✓ Done' : 'Done'}
+                          </button>
+                        )}
+                      </div>
                       <div className="text-sm">
                         <span className={checked || off ? 'text-gray-400 line-through' : 'text-gray-900'}>{it.task}</span>
                         <PriorityPicker value={it.priority} onChange={p => onPriority(key, p)} />
@@ -301,6 +307,21 @@ export function TodoReportPanel() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleLatest = async (key: string, done: boolean) => {
+    if (!report) return;
+    const before = report;
+    const next = { ...(report.done || {}) };
+    if (done) next[key] = true;
+    else delete next[key];
+    setReport({ ...report, done: next });
+    try {
+      await api.markLatestTodo(key, done);
+    } catch (e) {
+      setReport(before);
+      setError((e as Error).message);
     }
   };
 
@@ -460,10 +481,12 @@ export function TodoReportPanel() {
         <ReportView
           report={report}
           filter={filter}
+          done={report.done || {}}
+          onToggle={toggleLatest}
           onPriority={prioritizeLatest}
           actions={
             <>
-              {copyButton(report)}
+              {copyButton(report, report.done)}
               {savedAs ? (
                 <Button variant="ghost" className={smallButton} onClick={() => setOpenId(savedAs.id)}>
                   Saved as {savedAs.name}
