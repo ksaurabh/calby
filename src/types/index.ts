@@ -483,3 +483,13 @@ export interface CalendarStatus {
   connectedAt: string | null;
   scopes: string[];
 }
+
+/** A link to an event type that works for one booking and expires after two weeks. */
+export interface OneOffLink {
+  id: string;
+  slug: string;
+  createdAt: string;
+  expiresAt: string;
+  usedAt: string | null;
+  state: 'open' | 'used' | 'expired';
+}

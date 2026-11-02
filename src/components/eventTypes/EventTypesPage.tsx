@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { OneOffLinks } from './OneOffLinks';
 import type { CalendarStatus, Colleague, CommitmentType, EventType } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
@@ -279,6 +280,7 @@ export function EventTypesPage() {
                   Open
                 </a>
               </div>
+              <OneOffLinks eventTypeId={eventType.id} />
             </div>
           ))}
         </div>

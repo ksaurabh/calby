@@ -95,6 +95,7 @@ const BOOKINGS_FILE = join(__dirname, 'bookings.json');
 const COMMITMENT_TYPES_FILE = join(__dirname, 'commitment-types.json');
 const NOTES_FILE = join(__dirname, 'notes.json');
 const TODO_REPORTS_FILE = join(__dirname, 'todo-reports.json');
+const ONE_OFF_LINKS_FILE = join(__dirname, 'one-off-links.json');
 const ZOOM_SUMMARIES_FILE = join(__dirname, 'zoom-summaries.json');
 const CHAT_SESSIONS_FILE = join(__dirname, 'chat-sessions.json');
 
@@ -1779,6 +1780,109 @@ function findBySlug(slug) {
   return getEventTypes().find(e => e.slug === slug && e.active);
 }
 
+// One-off links: a link of their own to an event type, good for one booking
+// and gone two weeks after it was made, whichever comes first.
+const ONE_OFF_TTL_MS = 14 * 86400_000;
+
+function getOneOffLinks() {
+  return readJson(ONE_OFF_LINKS_FILE, { links: [] }).links || [];
+}
+
+function saveOneOffLinks(links) {
+  writeFileSync(ONE_OFF_LINKS_FILE, JSON.stringify({ links }, null, 2));
+}
+
+const oneOffState = link =>
+  link.bookingId ? 'used' : Date.parse(link.expiresAt) <= Date.now() ? 'expired' : link.claimedAt ? 'booking' : 'open';
+
+/** The event type behind a public slug — its own link, or a one-off one. */
+function resolveSlug(slug) {
+  const eventType = findBySlug(slug);
+  if (eventType) return { eventType, oneOff: null };
+  const link = getOneOffLinks().find(l => l.slug === slug);
+  if (!link) return { error: 'This booking link is not valid.' };
+  const state = oneOffState(link);
+  if (state === 'used') return { error: 'This one-off link has already been used to book a meeting.' };
+  if (state === 'expired') return { error: 'This one-off link has expired.' };
+  const target = getEventTypes().find(e => e.id === link.eventTypeId && e.active);
+  if (!target) return { error: 'This booking link is not available right now.' };
+  return { eventType: target, oneOff: link };
+}
+
+// Claimed while a booking is being made, so two guests can't both use it.
+// A claim older than two minutes is a booking that died part-way.
+function claimOneOff(id) {
+  const links = getOneOffLinks();
+  const link = links.find(l => l.id === id);
+  if (!link || oneOffState(link) === 'used' || oneOffState(link) === 'expired') return false;
+  if (link.claimedAt && Date.now() - Date.parse(link.claimedAt) < 120_000) return false;
+  link.claimedAt = new Date().toISOString();
+  saveOneOffLinks(links);
+  return true;
+}
+
+function settleOneOff(id, bookingId) {
+  const links = getOneOffLinks();
+  const link = links.find(l => l.id === id);
+  if (!link) return;
+  delete link.claimedAt;
+  if (bookingId) {
+    link.bookingId = bookingId;
+    link.usedAt = new Date().toISOString();
+  }
+  saveOneOffLinks(links);
+}
+
+const oneOffView = l => ({
+  id: l.id,
+  slug: l.slug,
+  createdAt: l.createdAt,
+  expiresAt: l.expiresAt,
+  usedAt: l.usedAt || null,
+  state: oneOffState(l) === 'booking' ? 'open' : oneOffState(l),
+});
+
+app.get('/api/event-types/:id/one-off-links', requireAuth, (req, res) => {
+  const eventType = ownEventType(req);
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  // Expired ones linger a day so you can see they're gone, then drop off.
+  const links = getOneOffLinks()
+    .filter(l => l.eventTypeId === eventType.id)
+    .filter(l => Date.parse(l.expiresAt) > Date.now() - 86400_000 || l.bookingId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map(oneOffView);
+  res.json({ links });
+});
+
+app.post('/api/event-types/:id/one-off-links', requireAuth, (req, res) => {
+  const eventType = ownEventType(req);
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  const now = Date.now();
+  const link = {
+    id: generateId('oneoff'),
+    slug: generatePublicSlug(),
+    eventTypeId: eventType.id,
+    ownerEmail: eventType.ownerEmail,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + ONE_OFF_TTL_MS).toISOString(),
+  };
+  // Tidy up: drop unused links that expired over a day ago.
+  const kept = getOneOffLinks().filter(l => l.bookingId || Date.parse(l.expiresAt) > now - 86400_000);
+  saveOneOffLinks([...kept, link]);
+  res.json({ link: oneOffView(link) });
+});
+
+app.delete('/api/event-types/:id/one-off-links/:linkId', requireAuth, (req, res) => {
+  const eventType = ownEventType(req);
+  if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  const links = getOneOffLinks();
+  if (!links.some(l => l.id === req.params.linkId && l.eventTypeId === eventType.id)) {
+    return res.status(404).json({ error: 'No such link' });
+  }
+  saveOneOffLinks(links.filter(l => l.id !== req.params.linkId));
+  res.json({ ok: true });
+});
+
 // Quick preview: exactly what the public link offers (same rules, the same
 // cached-review mode, never a model call), next to your own calendar entries.
 // It reads the calendar from the recent snapshot, so it's fast; `refresh=1`
@@ -1813,8 +1917,8 @@ app.get('/api/event-types/:id/quick-preview', requireAuth, async (req, res) => {
 });
 
 app.get('/api/book/:slug', async (req, res) => {
-  const eventType = findBySlug(req.params.slug);
-  if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });
+  const { eventType, oneOff, error: slugError } = resolveSlug(req.params.slug);
+  if (!eventType) return res.status(404).json({ error: slugError });
 
   const durationMinutes = resolveDuration(eventType, req.query.duration);
   if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
@@ -1825,6 +1929,7 @@ app.get('/api/book/:slug', async (req, res) => {
     res.json({
       eventType: publicEventType(eventType, owner?.name || 'the host', durationMinutes),
       days,
+      oneOffExpiresAt: oneOff?.expiresAt || null,
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
@@ -1832,8 +1937,8 @@ app.get('/api/book/:slug', async (req, res) => {
 });
 
 app.post('/api/book/:slug', async (req, res) => {
-  const eventType = findBySlug(req.params.slug);
-  if (!eventType) return res.status(404).json({ error: 'This booking link is not valid.' });
+  const { eventType, oneOff, error: slugError } = resolveSlug(req.params.slug);
+  if (!eventType) return res.status(404).json({ error: slugError });
 
   const name = req.body.name?.trim();
   const email = req.body.email?.toLowerCase().trim();
@@ -1847,6 +1952,10 @@ app.post('/api/book/:slug', async (req, res) => {
   const durationMinutes = resolveDuration(eventType, req.body.durationMinutes);
   if (!durationMinutes) return res.status(400).json({ error: 'That meeting length is not offered' });
 
+  if (oneOff && !claimOneOff(oneOff.id)) {
+    return res.status(409).json({ error: 'This one-off link is being used to book right now, or was just used.' });
+  }
+  let bookedId = null;
   try {
     // Re-check against the live calendar: the slot may have been taken between
     // the page loading and this submission.
@@ -1896,7 +2005,9 @@ app.post('/api/book/:slug', async (req, res) => {
       status: 'confirmed',
       createdAt: new Date().toISOString(),
     };
+    if (oneOff) booking.oneOffLinkId = oneOff.id;
     saveBookings([...getBookings(), booking]);
+    bookedId = booking.id;
 
     res.json({
       ok: true,
@@ -1916,6 +2027,8 @@ app.post('/api/book/:slug', async (req, res) => {
   } catch (err) {
     console.error('[booking] failed:', err.message);
     res.status(err.status === 409 ? 409 : 502).json({ error: err.message });
+  } finally {
+    if (oneOff) settleOneOff(oneOff.id, bookedId);
   }
 });
 

@@ -45,12 +45,14 @@ export function BookingPage({ slug }: { slug: string }) {
   const [error, setError] = useState<string | null>(null);
   const [viewerTz, setViewerTz] = useState(browserTimezone());
   const [duration, setDuration] = useState<number | null>(null);
+  const [oneOffExpiresAt, setOneOffExpiresAt] = useState<string | null>(null);
 
   const load = useCallback(async (durationMinutes?: number) => {
     try {
       const data = await api.bookingPage(slug, durationMinutes);
       setEventType(data.eventType);
       setDays(data.days);
+      setOneOffExpiresAt(data.oneOffExpiresAt || null);
       setDuration(data.eventType.durationMinutes);
     } catch (e) {
       setError((e as Error).message);
@@ -173,6 +175,12 @@ export function BookingPage({ slug }: { slug: string }) {
       )}
       {eventType.availabilitySummary && (
         <p className="mt-3 text-xs text-gray-500">{eventType.availabilitySummary}</p>
+      )}
+      {oneOffExpiresAt && (
+        <p className="mt-3 text-xs text-amber-700">
+          A one-off link: it works for one booking, until{' '}
+          {new Date(oneOffExpiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}.
+        </p>
       )}
       {step === 'pick' && eventType.durationOptions.length > 1 && (
         <div className="mt-5">

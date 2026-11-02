@@ -2,6 +2,7 @@ import type {
   ZoomSummary,
   TodoReport,
   SavedTodoReport,
+  OneOffLink,
   TodoPriority,
   IgnoreRule,
   IntegrationStatus,
@@ -221,6 +222,17 @@ export const api = {
     }>(`/api/event-types/${id}/quick-preview${qs ? `?${qs}` : ''}`);
   },
 
+  oneOffLinks: (eventTypeId: string) =>
+    request<{ links: OneOffLink[] }>(`/api/event-types/${eventTypeId}/one-off-links`),
+
+  createOneOffLink: (eventTypeId: string) =>
+    request<{ link: OneOffLink }>(`/api/event-types/${eventTypeId}/one-off-links`, { method: 'POST' }),
+
+  deleteOneOffLink: (eventTypeId: string, linkId: string) =>
+    request<{ ok: boolean }>(`/api/event-types/${eventTypeId}/one-off-links/${encodeURIComponent(linkId)}`, {
+      method: 'DELETE',
+    }),
+
   listBookings: () => request<{ bookings: Booking[] }>('/api/bookings'),
 
   suggestSlots: (
@@ -268,7 +280,7 @@ export const api = {
 
   // Public booking page (no authentication)
   bookingPage: (slug: string, durationMinutes?: number) =>
-    request<{ eventType: PublicEventType; days: SlotDay[] }>(
+    request<{ eventType: PublicEventType; days: SlotDay[]; oneOffExpiresAt?: string | null }>(
       `/api/book/${slug}${durationMinutes ? `?duration=${durationMinutes}` : ''}`
     ),
 
