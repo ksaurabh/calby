@@ -226,6 +226,16 @@ export interface TodoReport {
   costUsd: number;
 }
 
+/** A to-do report you saved, named todo-report-<date>. */
+export interface SavedTodoReport {
+  id: string;
+  name: string;
+  savedAt: string;
+  report: TodoReport;
+  /** Ticked-off items, keyed "<meeting index>-<item index>". */
+  done: Record<string, boolean>;
+}
+
 /** "Always ignore": a recurring series, or every meeting with a title. */
 export interface IgnoreRule {
   id: string;

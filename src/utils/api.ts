@@ -1,6 +1,7 @@
 import type {
   ZoomSummary,
   TodoReport,
+  SavedTodoReport,
   IgnoreRule,
   IntegrationStatus,
   AttendedMeeting,
@@ -382,6 +383,20 @@ export const api = {
       `/api/recordings/todos${progressId ? `?progress=${encodeURIComponent(progressId)}` : ''}`,
       { method: 'POST', body: JSON.stringify({ days }) }
     ),
+
+  savedTodoReports: () => request<{ saved: SavedTodoReport[] }>('/api/recordings/todos/saved'),
+
+  saveTodoReport: () =>
+    request<{ saved: SavedTodoReport }>('/api/recordings/todos/saved', { method: 'POST' }),
+
+  markTodo: (id: string, key: string, done: boolean) =>
+    request<{ saved: SavedTodoReport }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ key, done }),
+    }),
+
+  deleteSavedTodoReport: (id: string) =>
+    request<{ ok: boolean }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Meetings you don't want flagged as unrecorded
   ignoreMeeting: (meeting: { eventId: string; title: string; start: string; recurringEventId: string | null; always: boolean }) =>

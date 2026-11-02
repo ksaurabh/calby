@@ -3428,18 +3428,81 @@ function cachedSummary(key) {
   return hit && Date.now() - hit.at < SUMMARY_TTL ? hit.text : undefined;
 }
 
-function getTodoReports() {
-  return readJson(TODO_REPORTS_FILE, { reports: {} }).reports || {};
+function todoStore() {
+  const data = readJson(TODO_REPORTS_FILE, { reports: {}, saved: {} });
+  return { reports: data.reports || {}, saved: data.saved || {} };
+}
+
+function writeTodoStore(store) {
+  writeFileSync(TODO_REPORTS_FILE, JSON.stringify(store, null, 2));
 }
 
 function saveTodoReport(email, report) {
-  const reports = getTodoReports();
-  reports[email.toLowerCase()] = report;
-  writeFileSync(TODO_REPORTS_FILE, JSON.stringify({ reports }, null, 2));
+  const store = todoStore();
+  store.reports[email.toLowerCase()] = report;
+  writeTodoStore(store);
+}
+
+// The day a report was made, in its timezone: 2026-11-01.
+function reportDate(report) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: report.timezone || 'UTC' }).format(new Date(report.generatedAt));
+  } catch {
+    return report.generatedAt.slice(0, 10);
+  }
 }
 
 app.get('/api/recordings/todos', requireAuth, (req, res) => {
-  res.json({ report: getTodoReports()[req.user.email.toLowerCase()] || null });
+  res.json({ report: todoStore().reports[req.user.email.toLowerCase()] || null });
+});
+
+// Saved reports: kept until you delete them, with the items you've ticked off.
+app.get('/api/recordings/todos/saved', requireAuth, (req, res) => {
+  const saved = todoStore().saved[req.user.email.toLowerCase()] || [];
+  res.json({ saved: [...saved].sort((a, b) => b.savedAt.localeCompare(a.savedAt)) });
+});
+
+app.post('/api/recordings/todos/saved', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const report = store.reports[email];
+  if (!report) return res.status(404).json({ error: 'Create a to-do report first.' });
+  const mine = store.saved[email] || [];
+  if (mine.some(s => s.report.generatedAt === report.generatedAt)) {
+    return res.status(409).json({ error: 'This report is already saved.' });
+  }
+  // todo-report-<date>, with -2, -3… for more than one the same day.
+  const base = `todo-report-${reportDate(report)}`;
+  const names = new Set(mine.map(s => s.name));
+  let name = base;
+  for (let n = 2; names.has(name); n += 1) name = `${base}-${n}`;
+  const entry = { id: randomBytes(8).toString('hex'), name, savedAt: new Date().toISOString(), report, done: {} };
+  store.saved[email] = [...mine, entry];
+  writeTodoStore(store);
+  res.json({ saved: entry });
+});
+
+app.patch('/api/recordings/todos/saved/:id', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const entry = (store.saved[email] || []).find(s => s.id === req.params.id);
+  if (!entry) return res.status(404).json({ error: 'No such saved report.' });
+  const { key, done } = req.body || {};
+  if (typeof key !== 'string' || !/^\d+-\d+$/.test(key)) return res.status(400).json({ error: 'Bad item key.' });
+  if (done) entry.done[key] = true;
+  else delete entry.done[key];
+  writeTodoStore(store);
+  res.json({ saved: entry });
+});
+
+app.delete('/api/recordings/todos/saved/:id', requireAuth, (req, res) => {
+  const email = req.user.email.toLowerCase();
+  const store = todoStore();
+  const mine = store.saved[email] || [];
+  if (!mine.some(s => s.id === req.params.id)) return res.status(404).json({ error: 'No such saved report.' });
+  store.saved[email] = mine.filter(s => s.id !== req.params.id);
+  writeTodoStore(store);
+  res.json({ ok: true });
 });
 
 app.post('/api/recordings/todos', requireAuth, async (req, res) => {
