@@ -187,6 +187,12 @@ export interface AttendedMeeting {
   ignored?: { kind: 'once' | 'always'; ruleId?: string; at: string } | null;
 }
 
+/** Any event on your calendar in the window, for "Events from your calendar". */
+export interface CalendarEntry extends AttendedMeeting {
+  allDay: boolean;
+  declined: boolean;
+}
+
 /** A Zoom-only meeting's summary: Zoom's own, or Claude's from the transcript. */
 export interface ZoomSummary {
   text: string;
@@ -246,8 +252,11 @@ export interface SavedTodoReport {
 /** "Always ignore": a recurring series, or every meeting with a title. */
 export interface IgnoreRule {
   id: string;
-  kind: 'series' | 'title';
+  /** title-attendees: "Always hide" — same title, same other attendees. */
+  kind: 'series' | 'title' | 'title-attendees';
   value: string;
+  /** title-attendees only: the attendees it matches on. */
+  attendees?: string[];
   title: string;
   at: string;
 }

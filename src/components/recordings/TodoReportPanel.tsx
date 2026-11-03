@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { SavedTodoReport, TodoItem, TodoPriority, TodoReport } from '../../types';
 import { api } from '../../utils/api';
-import { Button, ProgressSteps } from '../common';
+import { Button, CollapseIcon, ProgressSteps, useCollapsed } from '../common';
 import type { ProgressStep } from '../common/ProgressSteps';
 
 const RANGES = [
@@ -75,7 +75,6 @@ function when(iso: string, timeZone: string) {
 }
 
 const smallButton = '!px-2 !py-1 text-xs';
-const COLLAPSED_KEY = 'calby.todoReport.collapsed';
 
 const isIgnored = (it: { priority: TodoPriority }) => it.priority === 'ignore';
 
@@ -261,24 +260,7 @@ export function TodoReportPanel() {
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
   const [filter, setFilter] = useState<Filter>('all');
-  // Remembered per browser; storage can be unavailable, so it's best-effort.
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(COLLAPSED_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-  const toggleCollapsed = () => {
-    setCollapsed(c => {
-      try {
-        localStorage.setItem(COLLAPSED_KEY, c ? '0' : '1');
-      } catch {
-        // Not remembered, but still toggled.
-      }
-      return !c;
-    });
-  };
+  const [collapsed, toggleCollapsed] = useCollapsed('todoReport');
 
   // The last report you made is kept, and so are the ones you saved.
   useEffect(() => {
@@ -434,11 +416,11 @@ export function TodoReportPanel() {
           <h2 className="font-semibold text-gray-900">
             <button
               type="button"
-              className="flex items-center gap-2 text-left group"
+              className="flex items-center gap-2.5 text-left group"
               onClick={toggleCollapsed}
               aria-expanded={!collapsed}
             >
-              <span className={`text-xs text-gray-400 group-hover:text-gray-700 transition-transform ${collapsed ? '' : 'rotate-90'}`}>▶</span>
+              <CollapseIcon collapsed={collapsed} />
               To-do report
               {collapsed && busy && <span className="text-xs font-normal text-gray-500">working…</span>}
               {collapsed && !busy && saved.length > 0 && (
@@ -449,7 +431,7 @@ export function TodoReportPanel() {
             </button>
           </h2>
           {!collapsed && (
-            <p className="text-xs text-gray-500 ml-5">
+            <p className="text-xs text-gray-500 ml-[2.375rem]">
               Your action items from recorded meetings — read from Avoma's notes and Gong's highlights,
               not the transcripts.
             </p>

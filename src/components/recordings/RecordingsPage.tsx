@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import type { AttendedMeeting, IgnoreRule, Recording, RecordingSource, RecordingSourceName } from '../../types';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import type { AttendedMeeting, CalendarEntry, IgnoreRule, Recording, RecordingSource, RecordingSourceName } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
-import { Button, ProgressSteps } from '../common';
+import { Button, CollapseIcon, ProgressSteps, useCollapsed } from '../common';
 import { TodoReportPanel } from './TodoReportPanel';
 import { ZoomOnlyActions } from './ZoomOnlyActions';
 import type { ProgressStep } from '../common/ProgressSteps';
@@ -30,6 +30,12 @@ function when(iso: string | null, timeZone: string) {
   });
 }
 
+// An all-day event's start is a plain date (YYYY-MM-DD), not an instant.
+function allDayLabel(date: string) {
+  const [y, m, d] = date.slice(0, 10).split('-').map(Number);
+  return new Date(y, m - 1, d, 12).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
 function People({ people, max = 4 }: { people: { email: string; name: string }[]; max?: number }) {
   if (!people.length) return <span className="text-gray-400">—</span>;
   const shown = people.slice(0, max);
@@ -47,9 +53,47 @@ function People({ people, max = 4 }: { people: { email: string; name: string }[]
 }
 
 function ruleLabel(rule: IgnoreRule) {
-  return rule.kind === 'series'
-    ? `the recurring "${rule.title || 'untitled'}" series`
-    : `every meeting titled "${rule.title || rule.value}"`;
+  if (rule.kind === 'series') return `the recurring "${rule.title || 'untitled'}" series`;
+  if (rule.kind === 'title-attendees') {
+    const n = rule.attendees?.length || 0;
+    return `"${rule.title || 'untitled'}" with the same ${n === 1 ? 'attendee' : `${n} attendees`}`;
+  }
+  return `every meeting titled "${rule.title || rule.value}"`;
+}
+
+const normTitle = (title: string) => (title || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const titleAndAttendees = (title: string, emails: string[]) =>
+  `${normTitle(title)}|${[...new Set(emails.map(e => e.toLowerCase().trim()).filter(Boolean))].sort().join(',')}`;
+
+// Mirrors the server's matching, so hiding updates the page at once.
+function ruleMatches(rule: IgnoreRule, m: AttendedMeeting) {
+  if (rule.kind === 'series') return m.recurringEventId === rule.value;
+  if (rule.kind === 'title-attendees') return titleAndAttendees(m.title, m.attendees.map(a => a.email)) === rule.value;
+  return normTitle(m.title) === rule.value;
+}
+
+/** A section heading that collapses what's under it. */
+function CollapsibleHeading({ collapsed, onToggle, title, count, children }: {
+  collapsed: boolean;
+  onToggle: () => void;
+  title: string;
+  count?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="px-5 py-3">
+      <h2 className="font-semibold text-gray-900">
+        <button type="button" className="flex items-center gap-2.5 text-left group" onClick={onToggle} aria-expanded={!collapsed}>
+          <CollapseIcon collapsed={collapsed} />
+          <span>
+            {title}
+            {count != null && <span className="text-gray-400 font-normal"> ({count})</span>}
+          </span>
+        </button>
+      </h2>
+      {!collapsed && children && <div className="ml-[2.375rem] text-xs text-gray-500">{children}</div>}
+    </div>
+  );
 }
 
 function SourceBadge({ source }: { source: RecordingSourceName }) {
@@ -60,12 +104,12 @@ function SourceBadge({ source }: { source: RecordingSourceName }) {
   );
 }
 
-function MeetingsTable({ meetings, timezone, showRecordings, actions }: {
-  meetings: AttendedMeeting[];
+function MeetingsTable<M extends AttendedMeeting & { allDay?: boolean; declined?: boolean }>({ meetings, timezone, showRecordings, actions }: {
+  meetings: M[];
   timezone: string;
   showRecordings?: boolean;
   /** Buttons at the end of each row. */
-  actions?: (meeting: AttendedMeeting) => ReactNode;
+  actions?: (meeting: M) => ReactNode;
 }) {
   return (
     <table className="w-full text-sm">
@@ -81,11 +125,14 @@ function MeetingsTable({ meetings, timezone, showRecordings, actions }: {
       <tbody className="divide-y divide-gray-100">
         {meetings.map(m => (
           <tr key={m.id} className="align-top">
-            <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{when(m.start, timezone)}</td>
+            <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
+              {m.allDay ? `${allDayLabel(m.start)} · all day` : when(m.start, timezone)}
+            </td>
             <td className="px-4 py-2 text-gray-900">
               {m.link ? (
                 <a href={m.link} target="_blank" rel="noreferrer" className="hover:underline">{m.title}</a>
               ) : m.title}
+              {m.declined && <span className="ml-2 text-[11px] text-gray-400">declined</span>}
             </td>
             <td className="px-4 py-2"><People people={m.attendees} /></td>
             {showRecordings && (
@@ -409,6 +456,10 @@ export function RecordingsPage() {
   const [startedAt, setStartedAt] = useState(() => Date.now());
   const [showRecorded, setShowRecorded] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // What you've hidden: single events, and "always" rules. Kept here so every
+  // section updates at once; the server stores each choice.
+  const [once, setOnce] = useState<Record<string, string>>({});
+  const [rules, setRules] = useState<IgnoreRule[]>([]);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
@@ -426,7 +477,14 @@ export function RecordingsPage() {
       }
     }, 1500);
     try {
-      setData(await api.recordings({ days, scope, refresh }, progressId));
+      const next = await api.recordings({ days, scope, refresh }, progressId);
+      const onceIgnored: Record<string, string> = {};
+      for (const m of [...(next.calendar.events || []), ...next.calendar.meetings, ...next.calendar.ignored]) {
+        if (m.ignored?.kind === 'once') onceIgnored[m.id] = m.ignored.at;
+      }
+      setOnce(onceIgnored);
+      setRules(next.ignoreRules);
+      setData(next);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -441,15 +499,29 @@ export function RecordingsPage() {
     load();
   }, [load]);
 
-  // Ignoring updates the page in place; the server stores the choice.
-  const byNewest = (a: AttendedMeeting, b: AttendedMeeting) => b.start.localeCompare(a.start);
-  const matchesRule = (m: AttendedMeeting, rule: IgnoreRule) =>
-    rule.kind === 'series'
-      ? m.recurringEventId === rule.value
-      : m.title.trim().toLowerCase().replace(/\s+/g, ' ') === rule.value;
+  const [eventsCollapsed, toggleEvents] = useCollapsed('recordings.events');
+  const [ignoredCollapsed, toggleIgnored] = useCollapsed('recordings.ignored', true);
 
-  const ignore = async (meeting: AttendedMeeting, always: boolean) => {
-    if (!data) return;
+  const view = useMemo(() => {
+    if (!data) return null;
+    const ignoredOf = (m: AttendedMeeting): AttendedMeeting['ignored'] => {
+      if (once[m.id]) return { kind: 'once', at: once[m.id] };
+      const rule = rules.find(r => ruleMatches(r, m));
+      return rule ? { kind: 'always', ruleId: rule.id, at: rule.at } : null;
+    };
+    const meetings = data.calendar.meetings.map(m => ({ ...m, ignored: ignoredOf(m) }));
+    const events: CalendarEntry[] = (data.calendar.events
+      ?? data.calendar.meetings.map(m => ({ ...m, allDay: false, declined: false })))
+      .map(e => ({ ...e, ignored: ignoredOf(e) }));
+    return {
+      meetings,
+      unrecorded: meetings.filter(m => !m.recordings.length && !m.ignored),
+      events: events.filter(e => !e.ignored),
+      ignored: events.filter(e => e.ignored),
+    };
+  }, [data, once, rules]);
+
+  const ignore = async (meeting: AttendedMeeting, mode: 'once' | 'always' | 'same') => {
     setBusyId(meeting.id);
     setError(null);
     try {
@@ -458,57 +530,13 @@ export function RecordingsPage() {
         title: meeting.title,
         start: meeting.start,
         recurringEventId: meeting.recurringEventId,
-        always,
+        always: mode !== 'once',
+        ...(mode === 'same'
+          ? { match: 'title-attendees' as const, attendeeEmails: meeting.attendees.map(a => a.email) }
+          : {}),
       });
-      const at = new Date().toISOString();
-      setData(d => {
-        if (!d) return d;
-        const moving = d.calendar.unrecorded.filter(m => (rule ? matchesRule(m, rule) : m.id === meeting.id));
-        const ids = new Set(moving.map(m => m.id));
-        const tagged = moving.map(m => ({
-          ...m,
-          ignored: rule ? { kind: 'always' as const, ruleId: rule.id, at } : { kind: 'once' as const, at },
-        }));
-        return {
-          ...d,
-          calendar: {
-            ...d.calendar,
-            unrecorded: d.calendar.unrecorded.filter(m => !ids.has(m.id)),
-            ignored: [...d.calendar.ignored, ...tagged].sort(byNewest),
-          },
-          ignoreRules: rule && !d.ignoreRules.some(r => r.id === rule.id) ? [...d.ignoreRules, rule] : d.ignoreRules,
-        };
-      });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  // Stop ignoring one meeting, or remove an "always" rule (which brings back
-  // every meeting it covered).
-  const restore = async (meeting: AttendedMeeting) => {
-    if (!data || !meeting.ignored) return;
-    const rule = meeting.ignored.kind === 'always'
-      ? data.ignoreRules.find(r => r.id === meeting.ignored!.ruleId)
-      : undefined;
-    if (rule) {
-      await removeRule(rule);
-      return;
-    }
-    setBusyId(meeting.id);
-    setError(null);
-    try {
-      await api.unignoreMeeting(meeting.id);
-      setData(d => d && {
-        ...d,
-        calendar: {
-          ...d.calendar,
-          unrecorded: [...d.calendar.unrecorded, { ...meeting, ignored: null }].sort(byNewest),
-          ignored: d.calendar.ignored.filter(m => m.id !== meeting.id),
-        },
-      });
+      if (rule) setRules(list => (list.some(r => r.id === rule.id) ? list : [...list, rule]));
+      else setOnce(map => ({ ...map, [meeting.id]: new Date().toISOString() }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -517,27 +545,38 @@ export function RecordingsPage() {
   };
 
   const removeRule = async (rule: IgnoreRule) => {
-    const covered = data?.calendar.ignored.filter(m => m.ignored?.ruleId === rule.id).length || 0;
+    const covered = view?.ignored.filter(m => m.ignored?.ruleId === rule.id).length || 0;
     if (covered > 1 && !window.confirm(
-      `Stop always ignoring ${ruleLabel(rule)}? ${covered} meetings in this window will be flagged again.`
+      `Stop always hiding ${ruleLabel(rule)}? ${covered} events in this window will show again.`
     )) return;
     setBusyId(rule.id);
     setError(null);
     try {
       await api.removeIgnoreRule(rule.id);
-      setData(d => {
-        if (!d) return d;
-        const back = d.calendar.ignored.filter(m => m.ignored?.ruleId === rule.id);
-        const ids = new Set(back.map(m => m.id));
-        return {
-          ...d,
-          calendar: {
-            ...d.calendar,
-            unrecorded: [...d.calendar.unrecorded, ...back.map(m => ({ ...m, ignored: null }))].sort(byNewest),
-            ignored: d.calendar.ignored.filter(m => !ids.has(m.id)),
-          },
-          ignoreRules: d.ignoreRules.filter(r => r.id !== rule.id),
-        };
+      setRules(list => list.filter(r => r.id !== rule.id));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Show it again: one event, or remove the "always" rule that covers it.
+  const restore = async (meeting: AttendedMeeting) => {
+    if (!meeting.ignored) return;
+    const rule = meeting.ignored.kind === 'always' ? rules.find(r => r.id === meeting.ignored!.ruleId) : undefined;
+    if (rule) {
+      await removeRule(rule);
+      return;
+    }
+    setBusyId(meeting.id);
+    setError(null);
+    try {
+      await api.unignoreMeeting(meeting.id);
+      setOnce(map => {
+        const next = { ...map };
+        delete next[meeting.id];
+        return next;
       });
     } catch (e) {
       setError((e as Error).message);
@@ -546,6 +585,8 @@ export function RecordingsPage() {
     }
   };
 
+  const recordedCount = data ? data.calendar.meetings.filter(m => m.recordings.length).length : 0;
+  const unrecordedIgnored = view ? view.meetings.filter(m => !m.recordings.length && m.ignored).length : 0;
   const tz = data?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const nothingConnected = data && !data.avoma.connected && !data.gong.connected && !data.zoom.connected;
 
@@ -615,7 +656,7 @@ export function RecordingsPage() {
                 Meetings with no recording{' '}
                 {data.calendar.connected && !data.calendar.error && (
                   <span className="text-gray-400 font-normal">
-                    ({data.calendar.unrecorded.length} of {data.calendar.meetings.length})
+                    ({view!.unrecorded.length} of {data.calendar.meetings.length})
                   </span>
                 )}
               </h2>
@@ -633,17 +674,17 @@ export function RecordingsPage() {
               <div className="mx-5 mb-4 rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm">{data.calendar.error}</div>
             ) : nothingConnected ? (
               <p className="px-5 pb-4 text-sm text-gray-500">Connect Avoma, Gong or Zoom to check for recordings.</p>
-            ) : data.calendar.unrecorded.length === 0 ? (
+            ) : view!.unrecorded.length === 0 ? (
               <p className="px-5 pb-4 text-sm text-emerald-700">
-                {data.calendar.ignored.length
-                  ? `Nothing left to look at — the other ${data.calendar.ignored.length} without a recording are ignored (below).`
+                {unrecordedIgnored
+                  ? `Nothing left to look at — the other ${unrecordedIgnored} without a recording are ignored (below).`
                   : data.calendar.meetings.length
                     ? 'Every meeting with attendees has a recording.'
                     : 'No meetings with attendees in this window.'}
               </p>
             ) : (
               <MeetingsTable
-                meetings={data.calendar.unrecorded}
+                meetings={view!.unrecorded}
                 timezone={tz}
                 actions={m => (
                   <div className="inline-flex gap-1">
@@ -651,7 +692,7 @@ export function RecordingsPage() {
                       variant="ghost"
                       className="!px-2 !py-1 text-xs"
                       disabled={busyId === m.id}
-                      onClick={() => ignore(m, false)}
+                      onClick={() => ignore(m, 'once')}
                       title="Stop flagging this one meeting"
                     >
                       Ignore
@@ -660,7 +701,7 @@ export function RecordingsPage() {
                       variant="ghost"
                       className="!px-2 !py-1 text-xs"
                       disabled={busyId === m.id}
-                      onClick={() => ignore(m, true)}
+                      onClick={() => ignore(m, 'always')}
                       title={m.recurringEventId
                         ? 'Never flag any meeting in this recurring series'
                         : `Never flag any meeting titled "${m.title}"`}
@@ -671,7 +712,7 @@ export function RecordingsPage() {
                 )}
               />
             )}
-            {(data.avoma.error || data.gong.error || data.zoom.error) && data.calendar.unrecorded.length > 0 && (
+            {(data.avoma.error || data.gong.error || data.zoom.error) && view!.unrecorded.length > 0 && (
               <p className="px-5 py-2 text-xs text-amber-700 border-t border-gray-100">
                 {[data.avoma.error && 'Avoma', data.gong.error && 'Gong', data.zoom.error && 'Zoom'].filter(Boolean).join(' and ')}
                 {' '}could not be read, so some of these may have a recording there.
@@ -679,20 +720,14 @@ export function RecordingsPage() {
             )}
           </section>
 
-          {data.calendar.connected && !data.calendar.error && data.calendar.meetings.length > data.calendar.unrecorded.length && (
+          {data.calendar.connected && !data.calendar.error && recordedCount > 0 && (
             <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <button
-                className="w-full px-5 py-3 flex items-center justify-between text-left hover:bg-gray-50"
-                onClick={() => setShowRecorded(s => !s)}
-              >
-                <h2 className="font-semibold text-gray-900">
-                  Meetings with a recording{' '}
-                  <span className="text-gray-400 font-normal">
-                    ({data.calendar.meetings.length - data.calendar.unrecorded.length})
-                  </span>
-                </h2>
-                <span className="text-gray-400 text-sm">{showRecorded ? '▾' : '▸'}</span>
-              </button>
+              <CollapsibleHeading
+                collapsed={!showRecorded}
+                onToggle={() => setShowRecorded(s => !s)}
+                title="Meetings with a recording"
+                count={recordedCount}
+              />
               {showRecorded && (
                 <MeetingsTable
                   meetings={data.calendar.meetings.filter(m => m.recordings.length)}
@@ -703,39 +738,86 @@ export function RecordingsPage() {
             </section>
           )}
 
+          {data.calendar.connected && !data.calendar.error && (
+            <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <CollapsibleHeading
+                collapsed={eventsCollapsed}
+                onToggle={toggleEvents}
+                title="Events from your calendar"
+                count={view!.events.length}
+              >
+                Everything on your calendar in the last {data.days} days. Hide one event, or Always hide
+                events with the same title and the same attendees — hidden ones move to Ignored meetings at the end.
+              </CollapsibleHeading>
+              {!eventsCollapsed && (view!.events.length === 0 ? (
+                <p className="px-5 pb-4 text-sm text-gray-500">
+                  {view!.ignored.length ? 'Every event in this window is hidden.' : 'No events in this window.'}
+                </p>
+              ) : (
+                <MeetingsTable
+                  meetings={view!.events}
+                  timezone={tz}
+                  showRecordings
+                  actions={m => (
+                    <div className="inline-flex gap-1">
+                      <Button
+                        variant="ghost"
+                        className="!px-2 !py-1 text-xs"
+                        disabled={busyId === m.id}
+                        onClick={() => ignore(m, 'once')}
+                        title="Hide just this event"
+                      >
+                        Hide
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="!px-2 !py-1 text-xs"
+                        disabled={busyId === m.id}
+                        onClick={() => ignore(m, 'same')}
+                        title={`Hide every event titled "${m.title}" with ${m.attendees.length ? 'these same attendees' : 'no other attendees'}`}
+                      >
+                        Always hide
+                      </Button>
+                    </div>
+                  )}
+                />
+              ))}
+            </section>
+          )}
+
           <RecordingsTable label="Avoma" source={data.avoma} data={data} timezone={tz} />
           <RecordingsTable label="Gong" source={data.gong} data={data} timezone={tz} />
           <ZoomTable source={data.zoom} timezone={tz} days={data.days} meetings={data.calendar.meetings} />
 
-          {(data.calendar.ignored.length > 0 || data.ignoreRules.length > 0) && (
+          {(view!.ignored.length > 0 || rules.length > 0) && (
             <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-5 py-3">
-                <h2 className="font-semibold text-gray-900">
-                  Ignored meetings <span className="text-gray-400 font-normal">({data.calendar.ignored.length})</span>
-                </h2>
-                <p className="text-xs text-gray-500">
-                  Meetings without a recording that you've chosen not to be told about. Restore one to flag it again.
-                </p>
-              </div>
-              {data.calendar.ignored.length > 0 && (
+              <CollapsibleHeading
+                collapsed={ignoredCollapsed}
+                onToggle={toggleIgnored}
+                title="Ignored meetings"
+                count={view!.ignored.length}
+              >
+                Events you've hidden or chosen not to be told about. Restore one to show it again.
+              </CollapsibleHeading>
+              {!ignoredCollapsed && view!.ignored.length > 0 && (
                 <MeetingsTable
-                  meetings={data.calendar.ignored}
+                  meetings={view!.ignored}
                   timezone={tz}
                   actions={m => {
                     const rule = m.ignored?.kind === 'always'
-                      ? data.ignoreRules.find(r => r.id === m.ignored?.ruleId)
+                      ? rules.find(r => r.id === m.ignored?.ruleId)
                       : undefined;
                     return (
                       <div className="inline-flex items-center gap-2">
                         <span className="text-xs text-gray-400">
-                          {rule ? `Always — ${ruleLabel(rule)}` : 'Ignored'}
+                          {rule ? `Always — ${ruleLabel(rule)}` : 'Hidden'}
                         </span>
                         <Button
                           variant="ghost"
                           className="!px-2 !py-1 text-xs"
                           disabled={busyId === m.id || (!!rule && busyId === rule.id)}
                           onClick={() => restore(m)}
-                          title={rule ? 'Stop always ignoring these — brings back every meeting it covered' : 'Flag this meeting again'}
+                          title={rule ? 'Remove this rule — brings back every event it covered' : 'Show this event again'}
                         >
                           Restore
                         </Button>
@@ -744,11 +826,11 @@ export function RecordingsPage() {
                   }}
                 />
               )}
-              {data.ignoreRules.length > 0 && (
+              {!ignoredCollapsed && rules.length > 0 && (
                 <div className="px-5 py-3 border-t border-gray-100">
-                  <div className="text-xs font-medium text-gray-700 mb-1">Always ignoring</div>
+                  <div className="text-xs font-medium text-gray-700 mb-1">Always hiding</div>
                   <ul className="space-y-1">
-                    {data.ignoreRules.map(rule => (
+                    {rules.map(rule => (
                       <li key={rule.id} className="flex items-center justify-between gap-2 text-sm">
                         <span className="text-gray-600">{ruleLabel(rule)}</span>
                         <Button

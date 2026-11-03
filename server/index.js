@@ -3498,27 +3498,43 @@ function saveIgnores(email, ignores) {
 
 const normTitle = title => String(title || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+// "Always hide": the same title with the same other attendees.
+const titleAndAttendees = (title, emails) =>
+  `${normTitle(title)}|${[...new Set((emails || []).map(e => String(e).toLowerCase().trim()).filter(Boolean))].sort().join(',')}`;
+
+function ruleMatches(rule, meeting) {
+  if (rule.kind === 'series') return meeting.recurringEventId === rule.value;
+  if (rule.kind === 'title-attendees') {
+    return titleAndAttendees(meeting.title, meeting.attendees.map(a => a.email)) === rule.value;
+  }
+  return normTitle(meeting.title) === rule.value;
+}
+
 // Why a meeting is ignored, or null.
 function ignoredBecause(meeting, ignores) {
   if (ignores.meetings[meeting.id]) return { kind: 'once', at: ignores.meetings[meeting.id].at };
-  const rule = ignores.rules.find(r =>
-    r.kind === 'series' ? meeting.recurringEventId === r.value : normTitle(meeting.title) === r.value
-  );
+  const rule = ignores.rules.find(r => ruleMatches(r, meeting));
   return rule ? { kind: 'always', ruleId: rule.id, at: rule.at } : null;
 }
 
 const clip = (value, n) => String(value || '').slice(0, n);
 
 app.post('/api/recordings/ignore', requireAuth, (req, res) => {
-  const { eventId, title, start, recurringEventId, always } = req.body || {};
+  const { eventId, title, start, recurringEventId, always, match, attendeeEmails } = req.body || {};
   if (!eventId && !always) return res.status(400).json({ error: 'Which meeting?' });
   const ignores = ignoresFor(req.user.email);
   const at = new Date().toISOString();
   if (always) {
-    const rule = recurringEventId
-      ? { kind: 'series', value: clip(recurringEventId, 300) }
-      : { kind: 'title', value: normTitle(clip(title, 300)) };
-    if (!rule.value) return res.status(400).json({ error: 'That meeting has no title to match on' });
+    const rule = match === 'title-attendees'
+      ? {
+        kind: 'title-attendees',
+        value: titleAndAttendees(clip(title, 300), Array.isArray(attendeeEmails) ? attendeeEmails.slice(0, 200).map(e => clip(e, 200)) : []),
+        attendees: Array.isArray(attendeeEmails) ? attendeeEmails.slice(0, 200).map(e => clip(e, 200)) : [],
+      }
+      : recurringEventId
+        ? { kind: 'series', value: clip(recurringEventId, 300) }
+        : { kind: 'title', value: normTitle(clip(title, 300)) };
+    if (!rule.value || rule.value.startsWith('|')) return res.status(400).json({ error: 'That meeting has no title to match on' });
     let saved = ignores.rules.find(r => r.kind === rule.kind && r.value === rule.value);
     if (!saved) {
       saved = { id: generateId('ign'), ...rule, title: clip(title, 300), at };
@@ -3981,6 +3997,7 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
         const token = await accessTokenFor(email, cal.refreshToken);
         const events = await fetchEvents(token, recordings.from, recordings.to);
         const now = Date.now();
+        calendar.events = events.filter(e => Date.parse(e.start) <= now);
         calendar.meetings = events
           .filter(e => !e.allDay && Date.parse(e.end) <= now)
           .filter(e => {
@@ -4014,6 +4031,11 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
         calendar.error = err.message;
       }
     }
+    // Every event in the window (started already), for "Events from your
+    // calendar": meetings carry what was matched to them.
+    const meetingById = new Map(calendar.meetings.map(m => [m.id, m]));
+    const rawEvents = calendar.events || [];
+    delete calendar.events;
 
     // Zoom gives no participants, so its recordings are tied to meetings by
     // time — or by Zoom meeting number, when the invite has the join link.
@@ -4073,6 +4095,27 @@ app.get('/api/recordings', requireAuth, async (req, res) => {
       },
       calendar: {
         ...calendar,
+        events: rawEvents
+          .map(e => {
+            const meeting = meetingById.get(e.id);
+            const me = e.attendees.find(a => a.self || a.email === email);
+            const entry = {
+              id: e.id,
+              title: e.summary || '(no title)',
+              start: e.start,
+              end: e.end,
+              allDay: !!e.allDay,
+              link: e.link || null,
+              recurringEventId: e.recurringEventId || null,
+              declined: me?.responseStatus === 'declined',
+              attendees: e.attendees
+                .filter(a => !a.self && a.email !== email)
+                .map(a => ({ email: a.email, name: a.name, responseStatus: a.responseStatus })),
+              recordings: meeting?.recordings || [],
+            };
+            return { ...entry, ignored: ignoredBecause(entry, ignores) };
+          })
+          .sort((a, b) => b.start.localeCompare(a.start)),
         unrecorded: unrecorded.filter(m => !m.ignored),
         // Unrecorded meetings you've chosen to ignore, and why.
         ignored: unrecorded.filter(m => m.ignored),

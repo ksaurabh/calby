@@ -7,6 +7,7 @@ import type {
   IgnoreRule,
   IntegrationStatus,
   AttendedMeeting,
+  CalendarEntry,
   RecordingSource,
   AssistantChatSession,
   AssistantChatSummary,
@@ -380,6 +381,8 @@ export const api = {
         meetings: AttendedMeeting[];
         unrecorded: AttendedMeeting[];
         ignored: AttendedMeeting[];
+        /** Every event in the window that has started. */
+        events?: CalendarEntry[];
       };
       ignoreRules: IgnoreRule[];
     }>(`/api/recordings?${new URLSearchParams({
@@ -448,7 +451,16 @@ export const api = {
     request<{ ok: boolean }>(`/api/recordings/todos/saved/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   // Meetings you don't want flagged as unrecorded
-  ignoreMeeting: (meeting: { eventId: string; title: string; start: string; recurringEventId: string | null; always: boolean }) =>
+  ignoreMeeting: (meeting: {
+    eventId: string;
+    title: string;
+    start: string;
+    recurringEventId: string | null;
+    always: boolean;
+    /** "Always hide": match on title plus these attendees instead. */
+    match?: 'title-attendees';
+    attendeeEmails?: string[];
+  }) =>
     request<{ ok: boolean; rule: IgnoreRule | null }>('/api/recordings/ignore', {
       method: 'POST',
       body: JSON.stringify(meeting),
