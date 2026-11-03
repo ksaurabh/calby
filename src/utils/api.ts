@@ -226,8 +226,11 @@ export const api = {
   oneOffLinks: (eventTypeId: string) =>
     request<{ links: OneOffLink[] }>(`/api/event-types/${eventTypeId}/one-off-links`),
 
-  createOneOffLink: (eventTypeId: string) =>
-    request<{ link: OneOffLink }>(`/api/event-types/${eventTypeId}/one-off-links`, { method: 'POST' }),
+  createOneOffLink: (eventTypeId: string, description: string) =>
+    request<{ link: OneOffLink }>(`/api/event-types/${eventTypeId}/one-off-links`, {
+      method: 'POST',
+      body: JSON.stringify({ description }),
+    }),
 
   deleteOneOffLink: (eventTypeId: string, linkId: string) =>
     request<{ ok: boolean }>(`/api/event-types/${eventTypeId}/one-off-links/${encodeURIComponent(linkId)}`, {

@@ -1836,6 +1836,7 @@ function settleOneOff(id, bookingId) {
 const oneOffView = l => ({
   id: l.id,
   slug: l.slug,
+  description: l.description || '',
   createdAt: l.createdAt,
   expiresAt: l.expiresAt,
   usedAt: l.usedAt || null,
@@ -1857,10 +1858,14 @@ app.get('/api/event-types/:id/one-off-links', requireAuth, (req, res) => {
 app.post('/api/event-types/:id/one-off-links', requireAuth, (req, res) => {
   const eventType = ownEventType(req);
   if (!eventType) return res.status(404).json({ error: 'Event type not found' });
+  const description = String(req.body?.description || '').trim().replace(/\s+/g, ' ');
+  if (!description) return res.status(400).json({ error: 'Add a short description, so you know who the link is for.' });
+  if (description.length > 120) return res.status(400).json({ error: 'Keep the description under 120 characters.' });
   const now = Date.now();
   const link = {
     id: generateId('oneoff'),
     slug: generatePublicSlug(),
+    description,
     eventTypeId: eventType.id,
     ownerEmail: eventType.ownerEmail,
     createdAt: new Date(now).toISOString(),

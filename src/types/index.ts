@@ -497,6 +497,8 @@ export interface CalendarStatus {
 export interface OneOffLink {
   id: string;
   slug: string;
+  /** Who or what it's for, in your words. */
+  description: string;
   createdAt: string;
   expiresAt: string;
   usedAt: string | null;
