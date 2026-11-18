@@ -131,6 +131,35 @@ export async function fetchBusy(token, timeMin, timeMax) {
   return busy.map(b => ({ start: new Date(b.start), end: new Date(b.end) }));
 }
 
+// Busy intervals for other people's calendars, read with the caller's own
+// token — the same free/busy Google Calendar shows them when they look up a
+// colleague. Each email maps to { busy } or { error } (e.g. not shared).
+export async function fetchBusyFor(token, emails, timeMin, timeMax) {
+  const out = new Map();
+  if (!emails.length) return out;
+  const data = await calendarFetch(token, '/freeBusy', {
+    method: 'POST',
+    body: JSON.stringify({
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      items: emails.map(id => ({ id })),
+    }),
+  });
+  for (const email of emails) {
+    const cal = data.calendars?.[email];
+    if (!cal) out.set(email, { error: 'not returned by Google' });
+    else if (cal.errors?.length) {
+      const reason = cal.errors[0].reason;
+      out.set(email, {
+        error: reason === 'notFound' ? 'their free/busy isn\u2019t visible to you' : reason || 'unreadable',
+      });
+    } else {
+      out.set(email, { busy: (cal.busy || []).map(b => ({ start: new Date(b.start), end: new Date(b.end) })) });
+    }
+  }
+  return out;
+}
+
 // Zoom meeting numbers mentioned in an invite — the join link usually sits in
 // the location, the description or the conference details. Used to tie a Zoom
 // recording to the calendar meeting it came from.

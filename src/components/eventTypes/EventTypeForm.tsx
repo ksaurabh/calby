@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { Colleague, CommitmentType, EventType } from '../../types';
 import { browserTimezone } from '../../utils/format';
 import { Button } from '../common';
@@ -185,53 +185,12 @@ export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit
           Also check these colleagues{' '}
           <span className="text-gray-400 font-normal">(optional)</span>
         </label>
-        {colleagues.length === 0 ? (
-          <p className="text-xs text-gray-500">
-            Nobody else from your organisation has signed in to Calby yet.
-          </p>
-        ) : (
-          <>
-            <div className="space-y-1.5">
-              {colleagues.map(colleague => {
-                const checked = withColleagues.includes(colleague.email);
-                return (
-                  <label
-                    key={colleague.email}
-                    className={`flex items-start gap-2 ${
-                      colleague.calendarConnected ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={checked}
-                      disabled={!colleague.calendarConnected}
-                      onChange={() =>
-                        setWithColleagues(current =>
-                          checked
-                            ? current.filter(email => email !== colleague.email)
-                            : [...current, colleague.email]
-                        )
-                      }
-                    />
-                    <span className="min-w-0">
-                      <span className="text-sm text-gray-900">{colleague.name}</span>
-                      <span className="block text-xs text-gray-500">
-                        {colleague.email}
-                        {!colleague.calendarConnected && ' — hasn\u2019t connected a calendar yet'}
-                      </span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            <p className="text-xs text-gray-500 mt-2">
-              A time is only offered when everyone ticked here is free as well. Calby
-              reads their free/busy times only — never the titles of their meetings —
-              and only for colleagues who connected their own calendar.
-            </p>
-          </>
-        )}
+        <ColleaguePicker colleagues={colleagues} selected={withColleagues} onChange={setWithColleagues} />
+        <p className="text-xs text-gray-500 mt-2">
+          A time is only offered when everyone added here is free as well. Calby reads
+          their free/busy times only — never the titles of their meetings — the same
+          way Google Calendar shows them to you.
+        </p>
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
@@ -241,5 +200,129 @@ export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Type a few letters of a name or email to find a colleague on your domain. */
+function ColleaguePicker({
+  colleagues,
+  selected,
+  onChange,
+}: {
+  colleagues: Colleague[];
+  selected: string[];
+  onChange: (emails: string[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+
+  const q = query.trim().toLowerCase();
+  const matches = useMemo(() => {
+    if (!q) return [];
+    return colleagues
+      .filter(c => !selected.includes(c.email))
+      .filter(c => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [colleagues, selected, q]);
+
+  // A full address on your domain that isn't in the list can still be added.
+  const domain = colleagues[0]?.email.split('@')[1];
+  const typedEmail =
+    /^[^\s@]+@[^\s@]+$/.test(q) &&
+    !selected.includes(q) &&
+    !matches.some(m => m.email === q)
+      ? q
+      : null;
+  const options: { email: string; name: string; note?: string }[] = [
+    ...matches,
+    ...(typedEmail ? [{ email: typedEmail, name: typedEmail, note: 'Add this address' }] : []),
+  ];
+
+  const add = (email: string) => {
+    onChange([...selected, email]);
+    setQuery('');
+    setActive(0);
+  };
+  const nameOf = (email: string) => colleagues.find(c => c.email === email)?.name || email;
+
+  return (
+    <div>
+      {selected.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {selected.map(email => (
+            <span
+              key={email}
+              className="inline-flex items-center gap-1 rounded-full bg-blue-50 border border-blue-200 pl-2.5 pr-1 py-0.5 text-sm text-blue-900"
+              title={email}
+            >
+              {nameOf(email)}
+              <button
+                type="button"
+                className="rounded-full w-5 h-5 leading-none text-blue-500 hover:bg-blue-100 hover:text-blue-800"
+                aria-label={`Remove ${nameOf(email)}`}
+                onClick={() => onChange(selected.filter(e => e !== email))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <input
+          type="text"
+          className={inputClass}
+          placeholder={domain ? `Type a name or email (e.g. someone@${domain})` : 'Type a name or email'}
+          value={query}
+          onChange={e => {
+            setQuery(e.target.value);
+            setActive(0);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onKeyDown={e => {
+            if (!options.length) return;
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setActive(i => (i + 1) % options.length);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setActive(i => (i - 1 + options.length) % options.length);
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              add(options[Math.min(active, options.length - 1)].email);
+            } else if (e.key === 'Escape') {
+              setOpen(false);
+            }
+          }}
+        />
+        {open && q && (
+          <ul className="absolute z-20 mt-1 w-full max-h-64 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg py-1">
+            {options.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-500">
+                No one matches — type their full email address to add them.
+              </li>
+            ) : (
+              options.map((o, i) => (
+                <li
+                  key={o.email}
+                  className={`px-3 py-1.5 cursor-pointer ${i === active ? 'bg-blue-50' : ''}`}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={e => {
+                    e.preventDefault();
+                    add(o.email);
+                  }}
+                >
+                  <span className="block text-sm text-gray-900">{o.note || o.name}</span>
+                  <span className="block text-xs text-gray-500">{o.email}</span>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }

@@ -352,7 +352,7 @@ export interface Colleague {
   email: string;
   name: string;
   picture?: string | null;
-  /** Only a connected calendar can be checked for availability. */
+  /** Signed in to Calby with their calendar connected (otherwise their free/busy is read as you see it). */
   calendarConnected: boolean;
 }
 

@@ -17,6 +17,7 @@ import {
   deleteEvent,
   exchangeCode,
   fetchBusy,
+  fetchBusyFor,
   fetchEvents,
   forgetAccessToken,
   generateState,
@@ -498,8 +499,9 @@ function generatePublicSlug() {
 }
 
 // Colleagues whose calendars an event type may also be checked against:
-// everyone else on the owner's email domain who has connected a calendar.
-// Only free/busy is ever read from them — never their event titles.
+// everyone else on the owner's email domain who has signed in to Calby, plus
+// people on that domain the owner has had meetings with. Only free/busy is
+// ever read from them — never their event titles.
 function colleaguesFor(email) {
   const domain = email?.toLowerCase().split('@')[1];
   if (!domain) return [];
@@ -510,15 +512,65 @@ function colleaguesFor(email) {
       name: u.name || u.email,
       picture: u.picture || null,
       calendarConnected: !!u.calendar?.refreshToken,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    }));
 }
 
-// Keep only colleagues who are genuinely on the owner's domain and reachable.
+// People on the owner's domain seen in their calendar (organisers and
+// attendees) over the last few months — the directory the colleague search
+// draws from. Read once an hour per owner.
+const calendarPeople = new Map();
+const CALENDAR_PEOPLE_TTL = 60 * 60 * 1000;
+async function calendarPeopleFor(email) {
+  const key = email.toLowerCase();
+  const cached = calendarPeople.get(key);
+  if (cached && Date.now() - cached.fetchedAt < CALENDAR_PEOPLE_TTL) return cached.people;
+  const calendar = calendarFor(key);
+  if (!calendar?.refreshToken) return [];
+  const domain = key.split('@')[1];
+  const token = await accessTokenFor(key, calendar.refreshToken);
+  const now = Date.now();
+  const events = await fetchEvents(token, new Date(now - 120 * 86400_000), new Date(now + 30 * 86400_000));
+  const people = new Map();
+  for (const e of events) {
+    for (const p of [e.organizer, ...e.attendees]) {
+      const addr = p?.email?.toLowerCase();
+      if (!addr || addr === key || addr.split('@')[1] !== domain) continue;
+      // Resource calendars (rooms) and groups aren't people.
+      if (addr.includes('resource.calendar.google.com')) continue;
+      const known = people.get(addr);
+      if (!known || (!known.name && p.name)) people.set(addr, { email: addr, name: p.name || '' });
+    }
+  }
+  const list = [...people.values()];
+  calendarPeople.set(key, { fetchedAt: Date.now(), people: list });
+  return list;
+}
+
+// Everyone the colleague search can suggest, Calby users first.
+async function colleagueDirectoryFor(email) {
+  const byEmail = new Map(colleaguesFor(email).map(c => [c.email, c]));
+  try {
+    for (const p of await calendarPeopleFor(email)) {
+      if (!byEmail.has(p.email)) {
+        byEmail.set(p.email, { email: p.email, name: p.name || p.email, picture: null, calendarConnected: false });
+      }
+    }
+  } catch (err) {
+    console.error(`[colleagues] calendar people for ${email} failed:`, err.message);
+  }
+  return [...byEmail.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Keep only well-formed addresses on the owner's own domain (not the owner).
 function ownColleagueEmails(email, emails) {
   if (!Array.isArray(emails)) return [];
-  const allowed = new Set(colleaguesFor(email).filter(c => c.calendarConnected).map(c => c.email));
-  return [...new Set(emails.map(e => String(e).toLowerCase()).filter(e => allowed.has(e)))];
+  const me = email.toLowerCase();
+  const domain = me.split('@')[1];
+  return [...new Set(
+    emails
+      .map(e => String(e).trim().toLowerCase())
+      .filter(e => /^[^\s@]+@[^\s@]+$/.test(e) && e !== me && e.split('@')[1] === domain)
+  )];
 }
 
 // Keep only ids that are actually this owner's commitment types.
@@ -619,6 +671,34 @@ async function calendarSnapshot(email, refreshToken, from, to, { withEvents = tr
   };
 }
 
+// Colleagues' free/busy as the owner sees it, kept as long as a calendar
+// snapshot so a page of slots doesn't re-ask Google on every load.
+const ownerViewCache = new Map();
+async function colleagueBusyViaOwner(ownerEmail, token, emails, from, to, { cached }) {
+  const out = new Map();
+  const missing = [];
+  for (const email of emails) {
+    const hit = ownerViewCache.get(`${ownerEmail.toLowerCase()}|${email}`);
+    if (cached && hit && Date.now() - hit.fetchedAt < SNAPSHOT_TTL && hit.from <= from && hit.to >= to) {
+      out.set(email, hit.result.error
+        ? hit.result
+        : { busy: hit.result.busy.filter(b => b.end > from && b.start < to) });
+    } else {
+      missing.push(email);
+    }
+  }
+  if (missing.length) {
+    const readTo = new Date(to.getTime() + 86400_000);
+    const fresh = await fetchBusyFor(token, missing, from, readTo);
+    const fetchedAt = Date.now();
+    for (const [email, result] of fresh) {
+      ownerViewCache.set(`${ownerEmail.toLowerCase()}|${email}`, { fetchedAt, from, to: readTo, result });
+      out.set(email, result.error ? result : { busy: result.busy.filter(b => b.end > from && b.start < to) });
+    }
+  }
+  return out;
+}
+
 const clockTime = ms => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
 // The model's reading of a piece of guidance, remembered so previewing a draft
@@ -703,20 +783,35 @@ async function availabilityFor(
     .filter(b => b.eventTypeId === eventType.id && b.status !== 'cancelled' && b.id !== ignoreBookingId)
     .map(b => b.start);
 
-  // Colleagues this event type also books for. Their free/busy is fetched with
-  // their own stored credentials, so nobody's calendar is read without them
-  // having connected it themselves — and only busy intervals come back, never
-  // titles or attendees.
-  const colleagueCount = (eventType.colleagueEmails || []).length;
+  // Colleagues this event type also books for. Only busy intervals come back,
+  // never titles or attendees. A colleague who connected their own calendar to
+  // Calby is read with their credentials (all of it); anyone else on the domain
+  // is read with the owner's token — the free/busy Google Calendar would show
+  // the owner for them anyway.
+  const colleagueEmails = eventType.colleagueEmails || [];
+  const colleagueCount = colleagueEmails.length;
   if (colleagueCount) {
     progress(`Checking ${colleagueCount} colleague${colleagueCount === 1 ? '\'s' : 's\''} calendar${colleagueCount === 1 ? '' : 's'}`);
   }
+  const viaOwner = colleagueEmails.filter(e => !findUser(e)?.calendar?.refreshToken);
+  let ownerView = new Map();
+  if (viaOwner.length) {
+    try {
+      ownerView = await colleagueBusyViaOwner(eventType.ownerEmail, token, viaOwner, now, horizonEnd, {
+        cached: useSnapshot && calendarCache !== 'refresh',
+      });
+    } catch (err) {
+      console.error(`[availability] colleague free/busy via ${eventType.ownerEmail} failed:`, err.message);
+      ownerView = new Map(viaOwner.map(e => [e, { error: err.message }]));
+    }
+  }
   const colleagues = await Promise.all(
-    (eventType.colleagueEmails || []).map(async colleagueEmail => {
+    colleagueEmails.map(async colleagueEmail => {
       const user = findUser(colleagueEmail);
       const base = { email: colleagueEmail, name: user?.name || colleagueEmail, busy: [] };
       if (!user?.calendar?.refreshToken) {
-        return { ...base, error: 'no calendar connected' };
+        const seen = ownerView.get(colleagueEmail) || { error: 'not read' };
+        return seen.error ? { ...base, error: seen.error } : { ...base, busy: seen.busy };
       }
       try {
         if (useSnapshot) {
@@ -1367,8 +1462,8 @@ app.delete('/api/calendar/connect', requireAuth, (req, res) => {
 // ---------------------------------------------------------------------------
 // Who else on your domain can be added to an event type, and whether their
 // calendar is connected — an event type can only check a connected one.
-app.get('/api/colleagues', requireAuth, (req, res) => {
-  res.json({ colleagues: colleaguesFor(req.user.email) });
+app.get('/api/colleagues', requireAuth, async (req, res) => {
+  res.json({ colleagues: await colleagueDirectoryFor(req.user.email) });
 });
 
 app.get('/api/event-types', requireAuth, (req, res) => {
