@@ -343,7 +343,7 @@ export function CommitmentTypesPage() {
         <div className="mt-8 bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="font-semibold text-gray-900">Time booked by commitment type</h2>
           <p className="text-xs text-gray-500 mt-1 mb-3">
-            Hours per day, last 7 days and next 7. Counts timed entries that block your
+            Hours per day, last 7 days and next 7 — click a type to hide or show it. Counts timed entries that block your
             calendar — not all-day entries, ones shown as free, or ones you declined.
           </p>
           <BookedTimeChart events={labelled} commitmentTypes={commitmentTypes} timezone={timezone} now={loadedAt} />

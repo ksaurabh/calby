@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { CalendarEvent, CommitmentType } from '../../types';
 
 // Time on the calendar per day, stacked by commitment type: the last 7 days
@@ -7,6 +7,15 @@ import type { CalendarEvent, CommitmentType } from '../../types';
 
 const NO_TYPE = { id: '__none', name: 'No type', color: '#9ca3af' };
 const DAY = 86400_000;
+const HIDDEN_KEY = 'commitments.chartHidden';
+
+function savedHidden(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
 
 interface Series {
   id: string;
@@ -37,8 +46,22 @@ export function BookedTimeChart({
   now: number;
 }) {
   const [hover, setHover] = useState<{ day: number; series: string } | null>(null);
+  // Types switched off in the legend — one click each, remembered per browser.
+  const [hidden, setHidden] = useState<Set<string>>(savedHidden);
+  const toggle = (id: string) =>
+    setHidden(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      try {
+        localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next]));
+      } catch {
+        // Remembering is only a convenience.
+      }
+      return next;
+    });
 
-  const { days, series, maxMinutes, totals } = useMemo(() => {
+  const { days, series, totals } = useMemo(() => {
     // 14 local days: 7 before today, then today and the 6 after.
     const days = Array.from({ length: 14 }, (_, i) => {
       const ms = now + (i - 7) * DAY;
@@ -73,9 +96,13 @@ export function BookedTimeChart({
         if (t) t[d.future ? 'next' : 'past'] += m;
       }
     }
-    const maxMinutes = Math.max(60, ...days.map(d => [...d.minutes.values()].reduce((a, b) => a + b, 0)));
-    return { days, series: used, maxMinutes, totals };
+    return { days, series: used, totals };
   }, [events, commitmentTypes, timezone, now]);
+
+  // Only the types switched on are drawn, and the scale fits them.
+  const shown = series.filter(s => !hidden.has(s.id));
+  const dayTotal = (d: (typeof days)[number]) => shown.reduce((a, s) => a + (d.minutes.get(s.id) || 0), 0);
+  const maxMinutes = Math.max(60, ...days.map(dayTotal));
 
   // Geometry
   const W = 720;
@@ -94,12 +121,39 @@ export function BookedTimeChart({
   const ticks = Array.from({ length: top / stepH + 1 }, (_, i) => i * stepH);
   const GAP = 2;
 
-  const sum = (which: 'past' | 'next') => [...totals.values()].reduce((a, t) => a + t[which], 0);
   const hovered = hover && days[hover.day];
   const hoveredSeries = hover && series.find(s => s.id === hover.series);
 
   return (
     <div>
+      {series.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {series.map(s => {
+            const on = !hidden.has(s.id);
+            const t = totals.get(s.id)!;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggle(s.id)}
+                onMouseEnter={() => on && setHover({ day: -1, series: s.id })}
+                onMouseLeave={() => setHover(null)}
+                title={`${on ? 'Hide' : 'Show'} ${s.name} — last 7 days ${hours(t.past)}, next 7 days ${hours(t.next)}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
+                  on ? 'border-gray-300 text-gray-800 bg-white hover:bg-gray-50' : 'border-gray-200 text-gray-400 bg-gray-50 line-through'
+                }`}
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-sm border"
+                  style={{ backgroundColor: on ? s.color : 'transparent', borderColor: s.color }}
+                />
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {series.length === 0 ? (
         <div className="py-8 text-center text-sm text-gray-500">Nothing booked in these two weeks.</div>
       ) : (
@@ -125,7 +179,7 @@ export function BookedTimeChart({
             {days.map((d, i) => {
               const x = padL + slot * i + (slot - barW) / 2;
               let acc = 0;
-              const segments = series
+              const segments = shown
                 .map(s => ({ s, m: d.minutes.get(s.id) || 0 }))
                 .filter(seg => seg.m > 0);
               return (
@@ -181,80 +235,26 @@ export function BookedTimeChart({
               }}
             >
               <div className="font-medium text-gray-900 mb-1">{hovered.label}, {hovered.date}</div>
-              {series.filter(s => hovered.minutes.get(s.id)).map(s => (
+              {shown.filter(s => hovered.minutes.get(s.id)).map(s => (
                 <div key={s.id} className={`flex items-center gap-2 ${hoveredSeries && hoveredSeries.id !== s.id ? 'text-gray-400' : 'text-gray-700'}`}>
                   <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
                   <span className="flex-1">{s.name}</span>
                   <span className="tabular-nums">{hours(hovered.minutes.get(s.id) || 0)}</span>
                 </div>
               ))}
-              {![...hovered.minutes.values()].some(Boolean) && <div className="text-gray-500">Nothing booked</div>}
+              {dayTotal(hovered) > 0 ? (
+                <div className="flex justify-between gap-2 mt-1 pt-1 border-t border-gray-100 font-medium text-gray-900">
+                  <span>Total</span>
+                  <span className="tabular-nums">{hours(dayTotal(hovered))}</span>
+                </div>
+              ) : (
+                <div className="text-gray-500">Nothing booked</div>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Legend and table view in one: hours per type, day by day, with week subtotals */}
-      {series.length > 0 && (
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-gray-500 border-b border-gray-200">
-                <th className="text-left font-medium py-1.5 pr-3">Day</th>
-                {series.map(s => (
-                  <th
-                    key={s.id}
-                    className="text-right font-medium py-1.5 px-2 whitespace-nowrap"
-                    onMouseEnter={() => setHover({ day: -1, series: s.id })}
-                    onMouseLeave={() => setHover(null)}
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: s.color }} />
-                      {s.name}
-                    </span>
-                  </th>
-                ))}
-                <th className="text-right font-medium py-1.5 pl-2">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {days.map((d, i) => {
-                const dayTotal = [...d.minutes.values()].reduce((a, b) => a + b, 0);
-                return (
-                  <Fragment key={d.key}>
-                    <tr
-                      className={`border-b border-gray-100 ${hover?.day === i ? 'bg-gray-50' : ''}`}
-                      onMouseEnter={() => setHover({ day: i, series: '' })}
-                      onMouseLeave={() => setHover(null)}
-                    >
-                      <td className={`py-1 pr-3 whitespace-nowrap ${i === 7 ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
-                        {i === 7 ? 'Today' : d.label}, {d.date}
-                      </td>
-                      {series.map(s => (
-                        <td key={s.id} className="py-1 px-2 text-right tabular-nums text-gray-700">
-                          {d.minutes.get(s.id) ? hours(d.minutes.get(s.id)!) : <span className="text-gray-300">–</span>}
-                        </td>
-                      ))}
-                      <td className="py-1 pl-2 text-right tabular-nums text-gray-900">{hours(dayTotal)}</td>
-                    </tr>
-                    {(i === 6 || i === 13) && (
-                      <tr className="border-b-2 border-gray-200 bg-gray-50 font-medium">
-                        <td className="py-1.5 pr-3 text-gray-900">{i === 6 ? 'Last 7 days' : 'Next 7 days'}</td>
-                        {series.map(s => (
-                          <td key={s.id} className="py-1.5 px-2 text-right tabular-nums text-gray-900">
-                            {hours(totals.get(s.id)![i === 6 ? 'past' : 'next'])}
-                          </td>
-                        ))}
-                        <td className="py-1.5 pl-2 text-right tabular-nums text-gray-900">{hours(sum(i === 6 ? 'past' : 'next'))}</td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   );
 }
