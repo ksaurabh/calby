@@ -1,3 +1,6 @@
+import type { CommitmentRule } from '../../shared/commitmentRules';
+export type { CommitmentRule, RuleCondition } from '../../shared/commitmentRules';
+
 export type Role = 'user' | 'admin' | 'super_admin';
 
 export interface User {
@@ -398,38 +401,24 @@ export interface EventPerson {
   self: boolean;
 }
 
-/** One commitment type's verdict on a single calendar entry. */
-export interface CommitmentVerdict {
-  commitmentTypeId: string;
-  name: string;
-  color: string;
-  condition: string;
-  matches: boolean;
-  confidence: 'high' | 'medium' | 'low';
-  reason: string;
-}
-
-export interface EventExplanation {
-  event: CalendarEvent;
-  summary: string;
-  verdicts: CommitmentVerdict[];
-  /** When the model was actually called. Absent on reports cached before this. */
-  calculatedAt?: string | null;
-  /** True when this answer came from the cache rather than a fresh call. */
-  cached?: boolean;
-}
-
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
 
-/** A plain-text condition describing a kind of calendar entry, plus a colour. */
+/**
+ * A kind of calendar entry, plus a colour. Entries are labelled by `rules`
+ * (any rule whose conditions all hold); types are listed in priority order.
+ */
 export interface CommitmentType {
   id: string;
   ownerEmail: string;
   name: string;
+  rules: CommitmentRule[];
+  /** Plain-English reading of the rules. */
   condition: string;
+  /** The old plain-English condition of a type that has no rules yet. */
+  legacyCondition?: string | null;
   color: string;
   createdAt: string;
   updatedAt: string;
@@ -437,7 +426,7 @@ export interface CommitmentType {
 
 export interface CommitmentTypeInput {
   name: string;
-  condition: string;
+  rules: CommitmentRule[];
   color?: string;
 }
 

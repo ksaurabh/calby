@@ -35,19 +35,15 @@ import {
 } from './scheduling.js';
 import { costOf, priceFor, usageEntries } from './llm.js';
 import {
-  cacheReport,
   cacheSlotReview,
-  cachedReport,
   cachedSlotReview,
-  classifyEvents,
   fingerprintOf,
-  splitCached,
 } from './classify.js';
+import { assignmentsFor, describeRules, sanitizeRules } from '../shared/commitmentRules.js';
 import {
   GUIDANCE_FIXABLE,
   askCalendar,
   buildCalendarContext,
-  explainEventMatch,
   explainSlot,
   suggestGuidanceFix,
 } from './assistant.js';
@@ -434,9 +430,31 @@ function saveEventTypes(eventTypes) {
   writeFileSync(EVENT_TYPES_FILE, JSON.stringify({ eventTypes }, null, 2));
 }
 
+// Stored in priority order: an entry takes the first type whose rules match.
 function getCommitmentTypes(ownerEmail) {
   const all = readJson(COMMITMENT_TYPES_FILE, { commitmentTypes: [] }).commitmentTypes || [];
-  return ownerEmail ? all.filter(t => t.ownerEmail === ownerEmail.toLowerCase()) : all;
+  return ownerEmail ? all.filter(t => t.ownerEmail === ownerEmail.toLowerCase()).map(withCondition) : all;
+}
+
+// `condition` is the plain-English reading of a type's rules, for the slot
+// review and the assistant. A type from before rules keeps its old text so
+// you can see what it meant while writing its rules.
+function withCondition(t) {
+  const rules = t.rules || [];
+  return {
+    ...t,
+    rules,
+    legacyCondition: rules.length ? null : t.condition || null,
+    condition: rules.length ? describeRules(rules) : t.condition || '',
+  };
+}
+
+// Label calendar entries with commitment types by their rules — instant, no model.
+function labelEvents(ownerEmail, events, timezone, commitmentTypes = getCommitmentTypes(ownerEmail)) {
+  return assignmentsFor(events, commitmentTypes, {
+    timezone: timezone || ownerTimezone(ownerEmail),
+    ownerEmail,
+  });
 }
 
 function saveCommitmentTypes(commitmentTypes) {
@@ -845,20 +863,7 @@ async function availabilityFor(
       progress('Fetching your calendar entries');
       events = await fetchEvents(token, now, horizonEnd);
     }
-    if (review === 'compute') {
-      const { pending } = splitCached(events, commitmentTypes);
-      if (pending.length && commitmentTypes.length) {
-        progress(`Classifying new calendar entries into commitment types (AI) — 0 of ${pending.length} done`);
-      }
-      ({ assignments } = await classifyEvents(events, commitmentTypes, {
-        apiKey,
-        email: eventType.ownerEmail,
-        onProgress: (done, total) =>
-          progress(`Classifying new calendar entries into commitment types (AI) — ${done} of ${total} done`),
-      }));
-    } else {
-      ({ assignments } = splitCached(events, commitmentTypes));
-    }
+    assignments = labelEvents(eventType.ownerEmail, events, eventType.rules.timezone, commitmentTypes);
   }
 
   // One decision function: the generator diagnoses every candidate, and keeps
@@ -1658,12 +1663,7 @@ async function previewAvailability(req, res, { duration, guidance, refresh }) {
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
-    const key = anthropicKeyFor(req.user.email);
-    const { assignments } = await classifyEvents(events, commitmentTypes, {
-      apiKey: key.key,
-      email: req.user.email,
-      keySource: key.source,
-    });
+    const assignments = labelEvents(req.user.email, events, target.rules.timezone, commitmentTypes);
     progress('Done');
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
@@ -2318,108 +2318,10 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   }
   const token = await accessTokenFor(req.user.email, calendar.refreshToken);
   const events = await fetchEvents(token, from, to, { maxResults });
-  const key = anthropicKeyFor(req.user.email);
   const commitmentTypes = getCommitmentTypes(req.user.email);
-  const { assignments, stats } = await classifyEvents(events, commitmentTypes, {
-    apiKey: key.key,
-    email: req.user.email,
-    keySource: key.source,
-  });
-  return { events, commitmentTypes, assignments, stats };
+  const assignments = labelEvents(req.user.email, events, null, commitmentTypes);
+  return { events, commitmentTypes, assignments };
 }
-
-// Background classification jobs. The calendar paints from cache immediately;
-// anything still unjudged is worked through here so the page can report
-// progress instead of waiting on a model call.
-const classificationJobs = new Map();
-const JOB_TTL = 10 * 60 * 1000;
-
-function reapJobs() {
-  const cutoff = Date.now() - JOB_TTL;
-  for (const [id, job] of classificationJobs) {
-    if (job.updatedAt < cutoff) classificationJobs.delete(id);
-  }
-}
-
-app.post('/api/calendar/classify', requireAuth, async (req, res) => {
-  reapJobs();
-  const { from, to } = calendarWindow(req.body);
-
-  let events;
-  let commitmentTypes;
-  try {
-    const calendar = calendarFor(req.user.email);
-    if (!calendar?.refreshToken) return res.status(409).json({ error: 'Connect your Google Calendar first.' });
-    const token = await accessTokenFor(req.user.email, calendar.refreshToken);
-    events = await fetchEvents(token, from, to);
-    commitmentTypes = getCommitmentTypes(req.user.email);
-  } catch (err) {
-    return res.status(err.status || 502).json({ error: err.message });
-  }
-
-  const { pending } = splitCached(events, commitmentTypes);
-  if (!pending.length) {
-    return res.json({ jobId: null, total: 0, done: 0, finished: true, assignments: {} });
-  }
-
-  const jobId = generateId('job');
-  const job = {
-    ownerEmail: req.user.email.toLowerCase(),
-    total: pending.length,
-    done: 0,
-    assignments: {},
-    finished: false,
-    error: null,
-    method: anthropicKeyFor(req.user.email).key ? 'model' : 'keyword',
-    updatedAt: Date.now(),
-  };
-  classificationJobs.set(jobId, job);
-
-  // Runs past this response; the client polls /api/calendar/classify/:jobId.
-  (async () => {
-    try {
-      const key = anthropicKeyFor(req.user.email);
-      const { assignments } = await classifyEvents(events, commitmentTypes, {
-        apiKey: key.key,
-        email: req.user.email,
-        keySource: key.source,
-        // The accumulated map is handed in: referring to the awaited result
-        // from here would hit it before it is assigned.
-        onProgress: (done, _total, assignments) => {
-          job.done = done;
-          job.assignments = Object.fromEntries(assignments);
-          job.updatedAt = Date.now();
-        },
-      });
-      job.assignments = Object.fromEntries(assignments);
-      job.done = job.total;
-    } catch (err) {
-      console.error('[classify] job failed:', err.message);
-      job.error = err.message;
-    } finally {
-      job.finished = true;
-      job.updatedAt = Date.now();
-    }
-  })();
-
-  res.json({ jobId, total: job.total, done: 0, finished: false, method: job.method, assignments: {} });
-});
-
-app.get('/api/calendar/classify/:jobId', requireAuth, (req, res) => {
-  const job = classificationJobs.get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'That classification job has expired.' });
-  if (job.ownerEmail !== req.user.email.toLowerCase()) {
-    return res.status(403).json({ error: 'Not your job' });
-  }
-  res.json({
-    total: job.total,
-    done: job.done,
-    finished: job.finished,
-    error: job.error,
-    method: job.method,
-    assignments: job.assignments,
-  });
-});
 
 app.get('/api/calendar/events', requireAuth, async (req, res) => {
   const { from, to } = calendarWindow(req.query);
@@ -2431,26 +2333,17 @@ app.get('/api/calendar/events', requireAuth, async (req, res) => {
     const token = await accessTokenFor(req.user.email, calendar.refreshToken);
     const events = await fetchEvents(token, from, to);
     const commitmentTypes = getCommitmentTypes(req.user.email);
-
-    // Colour from the cache only — no model call — so the calendar renders
-    // immediately. Anything still unjudged is reported as pending, and the
-    // client starts a classification job for it.
-    const { assignments, pending } = splitCached(events, commitmentTypes);
+    const timezone = ownerTimezone(req.user.email);
+    // Labelled by rules, so the calendar comes back fully coloured at once.
+    const assignments = labelEvents(req.user.email, events, timezone, commitmentTypes);
 
     res.json({
       events: events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
       commitmentTypes,
-      timezone: ownerTimezone(req.user.email),
+      timezone,
+      ownerEmail: req.user.email.toLowerCase(),
       from: from.toISOString(),
       to: to.toISOString(),
-      classification: {
-        cached: events.length - pending.length,
-        pending: pending.length,
-        matched: assignments.size,
-        // How verdicts are reached for this user: with a key it is the model,
-        // without one it is keyword overlap, which matches far less.
-        method: anthropicKeyFor(req.user.email).key ? 'model' : 'keyword',
-      },
     });
   } catch (err) {
     res.status(err.status || 502).json({ error: err.message });
@@ -2486,61 +2379,20 @@ app.post('/api/calendar/ask', requireAuth, async (req, res) => {
   }
 });
 
-// Explain one entry against every commitment type: does it satisfy the
-// condition, and on what evidence.
-app.post('/api/calendar/explain', requireAuth, async (req, res) => {
-  const eventId = req.body.eventId;
-  if (!eventId) return res.status(400).json({ error: 'Pick an event' });
-
-  const { from, to } = calendarWindow(req.body);
-  try {
-    const { events, commitmentTypes } = await ownerEvents(req, { from, to });
-    const event = events.find(e => e.id === eventId);
-    if (!event) return res.status(404).json({ error: 'That event is not in the current window.' });
-
-    // The report for an unchanged event against unchanged conditions never
-    // changes, so it is cached alongside the colours.
-    const cached = cachedReport(event, commitmentTypes);
-    if (cached) return res.json({ event, ...cached, cached: true });
-
-    const explainKey = anthropicKeyFor(req.user.email);
-    const report = await explainEventMatch({
-      event,
-      commitmentTypes,
-      timezone: ownerTimezone(req.user.email),
-      apiKey: explainKey.key,
-      email: req.user.email,
-      keySource: explainKey.source,
-    });
-    // Stored with the report, so a cached answer still says when it was worked out.
-    report.calculatedAt = new Date().toISOString();
-    cacheReport(event, commitmentTypes, report);
-    res.json({ event, ...report, cached: false });
-  } catch (err) {
-    console.error('[assistant] explain failed:', err.message);
-    res.status(err.status || 502).json({ error: err.message });
-  }
-});
-
 // ---------------------------------------------------------------------------
-// Commitment types — plain-text conditions describing what a calendar entry is,
-// each with a colour, used to colour-code the availability preview.
+// Commitment types — a name, a colour and rules saying which calendar entries
+// belong to it. Listed in priority order: the first matching type wins.
 // ---------------------------------------------------------------------------
 app.get('/api/commitment-types', requireAuth, (req, res) => {
   res.json({
-    commitmentTypes: getCommitmentTypes(req.user.email)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    commitmentTypes: getCommitmentTypes(req.user.email),
     colors: COMMITMENT_COLORS,
   });
 });
 
 app.post('/api/commitment-types', requireAuth, (req, res) => {
   const name = req.body.name?.trim();
-  const condition = req.body.condition?.trim() || '';
   if (!name) return res.status(400).json({ error: 'A name is required' });
-  if (!condition) {
-    return res.status(400).json({ error: 'Describe which calendar entries satisfy this commitment' });
-  }
 
   const all = getCommitmentTypes();
   const mine = all.filter(t => t.ownerEmail === req.user.email.toLowerCase());
@@ -2549,7 +2401,7 @@ app.post('/api/commitment-types', requireAuth, (req, res) => {
     id: generateId('ct'),
     ownerEmail: req.user.email.toLowerCase(),
     name,
-    condition,
+    rules: sanitizeRules(req.body.rules),
     // Default to the next unused palette colour.
     color: COMMITMENT_COLORS.includes(req.body.color)
       ? req.body.color
@@ -2558,9 +2410,7 @@ app.post('/api/commitment-types', requireAuth, (req, res) => {
     updatedAt: now,
   };
   saveCommitmentTypes([...all, commitmentType]);
-  // No cache wipe needed: cached verdicts are keyed by the set of conditions,
-  // so changing them simply misses and re-asks.
-  res.json(commitmentType);
+  res.json(withCondition(commitmentType));
 });
 
 app.put('/api/commitment-types/:id', requireAuth, (req, res) => {
@@ -2573,12 +2423,27 @@ app.put('/api/commitment-types/:id', requireAuth, (req, res) => {
   all[index] = {
     ...all[index],
     name: req.body.name?.trim() || all[index].name,
-    condition: req.body.condition?.trim() || all[index].condition,
+    rules: Array.isArray(req.body.rules) ? sanitizeRules(req.body.rules) : all[index].rules || [],
     color: COMMITMENT_COLORS.includes(req.body.color) ? req.body.color : all[index].color,
     updatedAt: new Date().toISOString(),
   };
   saveCommitmentTypes(all);
-  res.json(all[index]);
+  res.json(withCondition(all[index]));
+});
+
+// Set the priority order of your commitment types (ids, highest first).
+app.put('/api/commitment-types-order', requireAuth, (req, res) => {
+  const me = req.user.email.toLowerCase();
+  const all = getCommitmentTypes();
+  const mine = all.filter(t => t.ownerEmail === me);
+  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+  const rank = id => {
+    const i = ids.indexOf(id);
+    return i < 0 ? ids.length : i;
+  };
+  const ordered = [...mine].sort((a, b) => rank(a.id) - rank(b.id));
+  saveCommitmentTypes([...all.filter(t => t.ownerEmail !== me), ...ordered]);
+  res.json({ commitmentTypes: getCommitmentTypes(me) });
 });
 
 app.delete('/api/commitment-types/:id', requireAuth, (req, res) => {
@@ -2779,8 +2644,7 @@ function assistantToolkit(email) {
         const token = await accessTokenFor(email, calendar.refreshToken);
         const events = await fetchEvents(token, from, to);
         const commitmentTypes = getCommitmentTypes(email);
-        // Cached labels only — answering should not trigger classification calls.
-        const { assignments } = splitCached(events, commitmentTypes);
+        const assignments = labelEvents(email, events, timezone, commitmentTypes);
         return `Calendar ${startDate} to ${endDate}:\n` +
           buildCalendarContext({ events, timezone, commitmentTypes, assignments });
       },

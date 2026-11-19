@@ -21,7 +21,6 @@ import type {
   ChatMessage,
   CommitmentType,
   CommitmentTypeInput,
-  EventExplanation,
   EventType,
   EventTypeInput,
   ManagedBooking,
@@ -87,46 +86,15 @@ export const api = {
       events: CalendarEvent[];
       commitmentTypes: CommitmentType[];
       timezone: string;
+      ownerEmail: string;
       from: string;
       to: string;
-      classification: {
-        cached: number;
-        pending: number;
-        matched: number;
-        method: 'model' | 'keyword';
-      };
     }>('/api/calendar/events'),
-
-  startClassification: () =>
-    request<{
-      jobId: string | null;
-      total: number;
-      done: number;
-      finished: boolean;
-      method: 'model' | 'keyword';
-      assignments: Record<string, string>;
-    }>('/api/calendar/classify', { method: 'POST', body: JSON.stringify({}) }),
-
-  classificationProgress: (jobId: string) =>
-    request<{
-      total: number;
-      done: number;
-      finished: boolean;
-      error: string | null;
-      method: 'model' | 'keyword';
-      assignments: Record<string, string>;
-    }>(`/api/calendar/classify/${jobId}`),
 
   askCalendar: (question: string, history: ChatMessage[]) =>
     request<{ answer: string; eventsConsidered: number; timezone: string }>('/api/calendar/ask', {
       method: 'POST',
       body: JSON.stringify({ question, history }),
-    }),
-
-  explainEvent: (eventId: string) =>
-    request<EventExplanation & { cached: boolean }>('/api/calendar/explain', {
-      method: 'POST',
-      body: JSON.stringify({ eventId }),
     }),
 
   // LLM cost
@@ -156,6 +124,12 @@ export const api = {
     request<CommitmentType>(`/api/commitment-types/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
+    }),
+
+  reorderCommitmentTypes: (ids: string[]) =>
+    request<{ commitmentTypes: CommitmentType[] }>('/api/commitment-types-order', {
+      method: 'PUT',
+      body: JSON.stringify({ ids }),
     }),
 
   deleteCommitmentType: (id: string) =>
