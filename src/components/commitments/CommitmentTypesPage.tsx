@@ -473,7 +473,6 @@ export function CommitmentTypesPage() {
                                     title={m!.ruleIndex < 0 ? 'Decided by AI' : `Matched rule ${m!.ruleIndex + 1}`}
                                   >
                                     {type.name}
-                                    <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
                                   </span>
                                 ) : (
                                   <span className="shrink-0 text-xs text-gray-400 whitespace-nowrap">no type</span>
