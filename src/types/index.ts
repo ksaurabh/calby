@@ -350,6 +350,18 @@ export interface EventTypeInput {
   colleagueEmails?: string[];
 }
 
+/** A colleague checked by an event type, as the quick preview shows them. */
+export interface ColleagueCalendar {
+  email: string;
+  name: string;
+  /** Why their calendar couldn't be read, if it couldn't. */
+  error: string | null;
+  /** What decides the slots. */
+  busy: { start: string; end: string }[];
+  /** Their entries as you can see them in Google Calendar; null if they share only free/busy. */
+  events: { id: string; summary: string | null; start: string; end: string; allDay: boolean }[] | null;
+}
+
 /** Someone else on your domain whose calendar an event type can also check. */
 export interface Colleague {
   email: string;

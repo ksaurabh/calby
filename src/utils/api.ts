@@ -19,6 +19,7 @@ import type {
   CalendarStatus,
   Colleague,
   ChatMessage,
+  ColleagueCalendar,
   CommitmentRule,
   CommitmentType,
   CommitmentTypeInput,
@@ -208,6 +209,7 @@ export const api = {
       days: SlotDay[];
       events: CalendarEvent[];
       busy: { start: string; end: string }[];
+      colleagues: ColleagueCalendar[];
       commitmentTypes: CommitmentType[];
       calendarFetchedAt: string;
     }>(`/api/event-types/${id}/quick-preview${qs ? `?${qs}` : ''}`);

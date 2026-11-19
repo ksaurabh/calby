@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { CalendarEvent, CommitmentType, PublicEventType, SlotDay } from '../../types';
+import type { CalendarEvent, ColleagueCalendar, CommitmentType, PublicEventType, SlotDay } from '../../types';
 import { api } from '../../utils/api';
 import { dateKeyInZone, todayKeyInZone, zonedTimeToUtc } from '../../utils/calendar';
 import { browserTimezone } from '../../utils/format';
@@ -15,6 +15,7 @@ interface Data {
   days: SlotDay[];
   events: CalendarEvent[];
   busy: { start: string; end: string }[];
+  colleagues?: ColleagueCalendar[];
   commitmentTypes: CommitmentType[];
   calendarFetchedAt: string;
 }
@@ -52,7 +53,7 @@ interface Block {
   label: string;
   sub: string;
   color?: string;
-  kind: 'event' | 'busy' | 'slot';
+  kind: 'event' | 'busy' | 'slot' | 'colleague';
   start: string;
   title?: string;
 }
@@ -119,6 +120,22 @@ function Timeline({ day, timezone, data, selected, onSelect, durationMinutes }: 
     .map(b => within(b.start, b.end))
     .filter((r): r is { s: number; e: number } => !!r)
     .filter(r => !timed.some(({ r: t }) => t.s <= r.s && t.e >= r.e));
+  // Each colleague also checked: their entries where you can see them, and
+  // busy time with no visible entry behind it.
+  const colleagues = (data.colleagues || []).map(c => {
+    const entries = (c.events || [])
+      .filter(e => !e.allDay)
+      .map(e => ({ e, r: within(e.start, e.end) }))
+      .filter((x): x is { e: NonNullable<ColleagueCalendar['events']>[number]; r: { s: number; e: number } } => !!x.r);
+    const busyOnly = c.busy
+      .map(b => within(b.start, b.end))
+      .filter((r): r is { s: number; e: number } => !!r)
+      .filter(r => !entries.some(({ r: t }) => t.s <= r.s && t.e >= r.e));
+    const allDayEntries = (c.events || []).filter(e => e.allDay && within(e.start, e.end));
+    return { c, entries, busyOnly, allDayEntries };
+  });
+  const firstName = (c: ColleagueCalendar) => (c.name || c.email).split(/[\s@]/)[0];
+
   const slots = data.days
     .flatMap(d => d.slots)
     .filter(s => dateKeyInZone(s.start, timezone) === day)
@@ -126,7 +143,12 @@ function Timeline({ day, timezone, data, selected, onSelect, durationMinutes }: 
 
   // Show 7 AM–7 PM, widened to fit whatever is on the day.
   const mins = (ms: number) => (ms - dayStart) / 60_000;
-  const points = [...timed.map(t => t.r), ...unexplained, ...slots];
+  const points = [
+    ...timed.map(t => t.r),
+    ...unexplained,
+    ...slots,
+    ...colleagues.flatMap(x => [...x.entries.map(t => t.r), ...x.busyOnly]),
+  ];
   const firstHour = Math.max(0, Math.min(7, ...points.map(p => Math.floor(mins(p.s) / 60))));
   const lastHour = Math.min(24, Math.max(19, ...points.map(p => Math.ceil(mins(p.e) / 60))));
   const top = (ms: number) => (mins(ms) - firstHour * 60) * PX_PER_MIN;
@@ -159,23 +181,58 @@ function Timeline({ day, timezone, data, selected, onSelect, durationMinutes }: 
     })),
   ]);
 
+  const colleagueBlocks = colleagues.map(({ c, entries, busyOnly }) => layLanes([
+    ...entries.map(({ e, r }) => ({
+      key: `c-${c.email}-${e.id}`,
+      top: top(r.s),
+      height: height(r.s, r.e),
+      label: e.summary || 'Busy',
+      sub: `${time(r.s)} – ${time(r.e)}`,
+      kind: 'colleague' as const,
+      start: e.start,
+      title: `${c.name}: ${e.summary || 'busy (private)'} · ${time(r.s)} – ${time(r.e)} — no slots are offered while ${firstName(c)} is busy`,
+    })),
+    ...busyOnly.map((r, i) => ({
+      key: `cb-${c.email}-${i}`,
+      top: top(r.s),
+      height: height(r.s, r.e),
+      label: 'Busy',
+      sub: `${time(r.s)} – ${time(r.e)}`,
+      kind: 'busy' as const,
+      start: new Date(r.s).toISOString(),
+      title: `${c.name} is busy ${time(r.s)} – ${time(r.e)}${c.events === null ? ' (they share only free/busy with you)' : ''} — no slots are offered then`,
+    })),
+  ]));
+
   const hours = Array.from({ length: lastHour - firstHour + 1 }, (_, i) => firstHour + i);
   const totalHeight = (lastHour - firstHour) * 60 * PX_PER_MIN;
 
   return (
     <div>
-      {allDay.length > 0 && (
+      {(allDay.length > 0 || colleagues.some(x => x.allDayEntries.length)) && (
         <div className="mb-2 space-y-1">
           {allDay.map(e => (
             <div key={e.id} className="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 truncate" title={e.summary}>
               All day · {e.summary}
             </div>
           ))}
+          {colleagues.flatMap(({ c, allDayEntries }) => allDayEntries.map(e => (
+            <div key={`${c.email}-${e.id}`} className="text-xs rounded bg-slate-100 text-slate-700 px-2 py-1 truncate" title={e.summary || ''}>
+              {firstName(c)} · All day · {e.summary || 'Busy'}
+            </div>
+          )))}
         </div>
       )}
       <div className="flex text-[11px] text-gray-500 mb-1">
         <div className="w-12 shrink-0" />
-        <div className="flex-1 px-1">Your calendar</div>
+        <div className="flex-1 px-1">You</div>
+        {colleagues.map(({ c }) => (
+          <div key={c.email} className="flex-1 px-1 truncate" title={c.error ? `${c.name}: ${c.error}` : c.email}>
+            {firstName(c)}
+            {c.error && <span className="text-amber-600"> ⚠</span>}
+            {!c.error && c.events === null && <span className="text-gray-400"> (free/busy)</span>}
+          </div>
+        ))}
         <div className="w-24 shrink-0 px-1">Open slots ({slots.length})</div>
       </div>
       <div className="relative flex" style={{ height: totalHeight }}>
@@ -194,28 +251,20 @@ function Timeline({ day, timezone, data, selected, onSelect, durationMinutes }: 
           {hours.map(h => (
             <div key={h} className="absolute inset-x-0 border-t border-gray-100" style={{ top: (h - firstHour) * 60 * PX_PER_MIN }} />
           ))}
-          {calendarBlocks.map(b => (
-            <div
-              key={b.key}
-              title={b.title}
-              className={`absolute rounded px-1.5 py-0.5 overflow-hidden text-[11px] leading-tight border ${
-                b.kind === 'busy'
-                  ? 'bg-[repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6_4px,#e5e7eb_4px,#e5e7eb_8px)] border-gray-300 text-gray-600'
-                  : 'bg-blue-50 border-blue-200 text-blue-900'
-              }`}
-              style={{
-                top: b.top,
-                height: b.height,
-                left: `calc(${(b.lane / b.lanes) * 100}% + 2px)`,
-                width: `calc(${100 / b.lanes}% - 4px)`,
-                ...(b.color ? { backgroundColor: `${b.color}22`, borderColor: b.color } : {}),
-              }}
-            >
-              <div className="font-medium truncate">{b.label}</div>
-              {b.height >= 26 && <div className="truncate opacity-75">{b.sub}</div>}
-            </div>
-          ))}
+          {calendarBlocks.map(b => <TimelineBlock key={b.key} b={b} />)}
         </div>
+        {colleagues.map(({ c }, i) => (
+          <div key={c.email} className="flex-1 relative border-l border-gray-200">
+            {hours.map(h => (
+              <div key={h} className="absolute inset-x-0 border-t border-gray-100" style={{ top: (h - firstHour) * 60 * PX_PER_MIN }} />
+            ))}
+            {c.error ? (
+              <div className="absolute inset-x-1 top-1 text-[10px] text-amber-700">Couldn’t read: {c.error}</div>
+            ) : (
+              colleagueBlocks[i].map(b => <TimelineBlock key={b.key} b={b} />)
+            )}
+          </div>
+        ))}
         <div className="w-24 shrink-0 relative border-l border-gray-200">
           {hours.map(h => (
             <div key={h} className="absolute inset-x-0 border-t border-gray-100" style={{ top: (h - firstHour) * 60 * PX_PER_MIN }} />
@@ -242,6 +291,31 @@ function Timeline({ day, timezone, data, selected, onSelect, durationMinutes }: 
         )}
       </div>
       {slots.length === 0 && <p className="mt-2 text-xs text-gray-500">No open slots on this day.</p>}
+    </div>
+  );
+}
+
+function TimelineBlock({ b }: { b: Block }) {
+  return (
+    <div
+      title={b.title}
+      className={`absolute rounded px-1.5 py-0.5 overflow-hidden text-[11px] leading-tight border ${
+        b.kind === 'busy'
+          ? 'bg-[repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6_4px,#e5e7eb_4px,#e5e7eb_8px)] border-gray-300 text-gray-600'
+          : b.kind === 'colleague'
+            ? 'bg-slate-100 border-slate-300 text-slate-800'
+            : 'bg-blue-50 border-blue-200 text-blue-900'
+      }`}
+      style={{
+        top: b.top,
+        height: b.height,
+        left: `calc(${(b.lane / b.lanes) * 100}% + 2px)`,
+        width: `calc(${100 / b.lanes}% - 4px)`,
+        ...(b.color ? { backgroundColor: `${b.color}22`, borderColor: b.color } : {}),
+      }}
+    >
+      <div className="font-medium truncate">{b.label}</div>
+      {b.height >= 26 && <div className="truncate opacity-75">{b.sub}</div>}
     </div>
   );
 }
@@ -383,7 +457,10 @@ export function QuickPreviewPage({ eventTypeId }: { eventTypeId: string }) {
         </div>
 
         {/* Your calendar for that day */}
-        <aside className="w-full xl:w-[26rem] shrink-0 bg-white rounded-xl border border-gray-200 p-4">
+        <aside
+          className="w-full xl:w-[var(--aside-w)] shrink-0 bg-white rounded-xl border border-gray-200 p-4"
+          style={{ ['--aside-w' as string]: `${Math.min(48, 26 + 9 * (data.colleagues?.length || 0))}rem` }}
+        >
           <div className="flex items-center justify-between mb-3">
             <Button variant="ghost" className="!px-2 !py-1 text-xs" onClick={() => setDay(shiftDay(shownDay, -1))}>←</Button>
             <div className="text-sm font-medium text-gray-900">{dayHeading(shownDay)}</div>
@@ -402,7 +479,7 @@ export function QuickPreviewPage({ eventTypeId }: { eventTypeId: string }) {
           />
           <p className="mt-3 text-[11px] text-gray-400">
             Times in {viewerTz}. Entries are coloured by commitment type; striped blocks are busy time with no entry
-            Calby can see.
+            Calby can see.{data.colleagues?.length ? ' A slot is only offered when everyone is free — hover a colleague’s entry for details.' : ''}
           </p>
         </aside>
       </div>

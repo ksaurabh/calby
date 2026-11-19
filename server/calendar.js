@@ -177,7 +177,9 @@ function zoomMeetingIds(e) {
 
 // The owner's actual events in a window — titles included, for their own
 // availability preview. The public booking page never sees these.
-export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } = {}) {
+// `calendarId` defaults to your own; another person's email reads their calendar
+// as you can see it (Google refuses when they share only free/busy).
+export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250, calendarId = 'primary' } = {}) {
   const params = new URLSearchParams({
     timeMin: timeMin.toISOString(),
     timeMax: timeMax.toISOString(),
@@ -185,7 +187,7 @@ export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } 
     orderBy: 'startTime',
     maxResults: String(maxResults),
   });
-  const data = await calendarFetch(token, `/calendars/primary/events?${params}`);
+  const data = await calendarFetch(token, `/calendars/${encodeURIComponent(calendarId)}/events?${params}`);
   return (data.items || [])
     .filter(e => e.status !== 'cancelled')
     .map(e => ({

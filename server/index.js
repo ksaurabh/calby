@@ -2004,6 +2004,42 @@ app.delete('/api/event-types/:id/one-off-links/:linkId', requireAuth, (req, res)
   res.json({ ok: true });
 });
 
+// Colleagues' calendar entries as the owner can see them in Google Calendar —
+// titles where the colleague shares event details with the owner, nothing
+// where they share only free/busy. Read with the owner's own token, never the
+// colleague's, and only for the owner's preview. Cached like a snapshot.
+const colleagueEntriesCache = new Map();
+async function colleagueEntriesAsOwnerSees(ownerEmail, token, emails, from, to, { fresh = false } = {}) {
+  return Promise.all(emails.map(async email => {
+    const key = `${ownerEmail.toLowerCase()}|${email}`;
+    const hit = colleagueEntriesCache.get(key);
+    if (!fresh && hit && Date.now() - hit.fetchedAt < SNAPSHOT_TTL && hit.from <= from && hit.to >= to) {
+      return { email, events: hit.events };
+    }
+    let events = null;
+    try {
+      const all = await fetchEvents(token, from, to, { calendarId: email });
+      // Only what blocks their time: not declined, not shown as free.
+      events = all
+        .filter(e => e.showAs !== 'free' && e.myResponse !== 'declined')
+        .map(e => ({
+          id: e.id,
+          summary: e.summary === '(no title)' ? null : e.summary,
+          start: e.start,
+          end: e.end,
+          allDay: e.allDay,
+        }));
+    } catch (err) {
+      // 404/403: they share only free/busy with you — busy blocks will do.
+      if (err.status !== 404 && err.status !== 403) {
+        console.error(`[preview] colleague ${email} entries failed:`, err.message);
+      }
+    }
+    colleagueEntriesCache.set(key, { fetchedAt: Date.now(), from, to, events });
+    return { email, events };
+  }));
+}
+
 // Quick preview: exactly what the public link offers (same rules, the same
 // cached-review mode, never a model call), next to your own calendar entries.
 // It reads the calendar from the recent snapshot, so it's fast; `refresh=1`
@@ -2021,8 +2057,28 @@ app.get('/api/event-types/:id/quick-preview', requireAuth, async (req, res) => {
     });
     const owner = findUser(eventType.ownerEmail);
     const assignments = availability.assignments || new Map();
+    const checked = availability.colleagues || [];
+    const entries = checked.length
+      ? await colleagueEntriesAsOwnerSees(
+          eventType.ownerEmail,
+          availability.token,
+          checked.map(c => c.email),
+          new Date(),
+          new Date(Date.now() + eventType.rules.horizonWeeks * 7 * 86400_000),
+          { fresh: req.query.refresh === '1' },
+        )
+      : [];
     res.json({
       eventType: publicEventType(eventType, owner?.name || 'the host', durationMinutes),
+      // Each colleague also checked: their busy time (what decides the slots),
+      // and their entries where you can see them (null when you can't).
+      colleagues: checked.map(c => ({
+        email: c.email,
+        name: c.name,
+        error: c.error || null,
+        busy: (c.busy || []).map(b => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() })),
+        events: entries.find(x => x.email === c.email)?.events ?? null,
+      })),
       active: !!eventType.active,
       slug: eventType.slug,
       days: availability.days,
