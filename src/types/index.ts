@@ -382,6 +382,10 @@ export interface CalendarEvent {
   attendees?: EventAttendee[];
   recurring?: boolean;
   link?: string | null;
+  /** Google Calendar's "Show as": a free entry doesn't block time. */
+  showAs?: 'free' | 'busy';
+  /** Your reply, when invited. */
+  myResponse?: 'accepted' | 'declined' | 'tentative' | 'needsAction' | null;
   /** Which commitment type this entry was judged to satisfy, if any. */
   commitmentTypeId?: string | null;
 }

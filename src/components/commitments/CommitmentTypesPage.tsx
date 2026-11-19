@@ -435,6 +435,7 @@ export function CommitmentTypesPage() {
                             <td className="py-2 pr-3">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="text-gray-900 truncate">{e.summary}</span>
+                                <FreeBusy event={e} />
                                 {type ? (
                                   <span
                                     className="shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border whitespace-nowrap"
@@ -512,5 +513,28 @@ export function CommitmentTypesPage() {
         )}
       </Modal>
     </div>
+  );
+}
+
+/** Busy or free as Google sees it: "Show as", and declining, both free the time. */
+function FreeBusy({ event }: { event: CalendarEvent }) {
+  if (event.myResponse === 'declined') {
+    return (
+      <span className="shrink-0 rounded px-1.5 py-0.5 text-xs bg-gray-100 text-gray-500 line-through" title="You declined — doesn't block your time">
+        declined
+      </span>
+    );
+  }
+  const free = event.showAs === 'free';
+  return (
+    <span
+      className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${
+        free ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-800 text-white'
+      }`}
+      title={free ? 'Shows as free in Google Calendar' : 'Shows as busy in Google Calendar'}
+    >
+      {free ? 'free' : 'busy'}
+      {!free && event.myResponse === 'tentative' && ' · maybe'}
+    </span>
   );
 }

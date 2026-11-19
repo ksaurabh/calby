@@ -211,6 +211,10 @@ export async function fetchEvents(token, timeMin, timeMax, { maxResults = 250 } 
         self: !!a.self,
         optional: !!a.optional,
       })),
+      // "Show as" in Google Calendar: free entries don't block your time.
+      showAs: e.transparency === 'transparent' ? 'free' : 'busy',
+      // Your own reply, when you were invited (accepted, declined, tentative, needsAction).
+      myResponse: (e.attendees || []).find(a => a.self)?.responseStatus || null,
       recurring: !!e.recurringEventId,
       // The series a recurring instance belongs to.
       recurringEventId: e.recurringEventId || null,
