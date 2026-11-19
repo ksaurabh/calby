@@ -272,12 +272,17 @@ export function CommitmentTypesPage() {
         </div>
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
-          {commitmentTypes.map((commitmentType, index) => (
-            <div key={commitmentType.id} className="p-4 flex items-start justify-between gap-4">
-              <div className="flex items-start gap-3 min-w-0">
-                <div className="flex flex-col -my-1">
+          {commitmentTypes.map((commitmentType, index) => {
+            const summary = commitmentType.mode === 'ai'
+              ? commitmentType.description
+              : commitmentType.rules.length
+                ? commitmentType.rules.map(describeRule).join('; or ')
+                : commitmentType.description;
+            return (
+              <div key={commitmentType.id} className="px-4 py-2 flex items-center gap-3 text-sm">
+                <span className="flex shrink-0">
                   <button
-                    className="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-4"
+                    className="px-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-20 text-[10px]"
                     disabled={index === 0}
                     onClick={() => move(index, -1)}
                     aria-label="Higher priority"
@@ -285,56 +290,43 @@ export function CommitmentTypesPage() {
                     ▲
                   </button>
                   <button
-                    className="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-4"
+                    className="px-0.5 text-gray-400 hover:text-gray-700 disabled:opacity-20 text-[10px]"
                     disabled={index === commitmentTypes.length - 1}
                     onClick={() => move(index, 1)}
                     aria-label="Lower priority"
                   >
                     ▼
                   </button>
-                </div>
+                </span>
                 <span
-                  className="mt-1 w-4 h-4 rounded shrink-0 border"
+                  className="w-3.5 h-3.5 rounded shrink-0 border"
                   style={{ backgroundColor: `${commitmentType.color}33`, borderColor: commitmentType.color }}
                 />
-                <div className="min-w-0">
-                  <div className="font-medium text-gray-900">
-                    {commitmentType.name}
-                    <button
-                      className="ml-2 text-xs font-normal text-blue-600 hover:underline"
-                      onClick={() => { setFilter(commitmentType.id); chooseView('list'); }}
-                    >
-                      {counts.get(commitmentType.id) || 0} entries
-                    </button>
-                  </div>
-                  {commitmentType.description && (
-                    <div className="text-sm text-gray-700 mt-0.5">{commitmentType.description}</div>
-                  )}
-                  {commitmentType.mode === 'ai' ? (
-                    <div className="text-xs text-violet-700 mt-0.5">AI decides from the description</div>
-                  ) : commitmentType.rules.length ? (
-                    <ul className="text-xs text-gray-500 mt-0.5 space-y-0.5">
-                      {commitmentType.rules.map((rule, i) => (
-                        <li key={rule.id}>
-                          {i > 0 && <span className="text-gray-400">or </span>}
-                          {describeRule(rule)}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div className="text-xs text-amber-700 mt-0.5">
-                      No rules yet, so nothing is labelled with this type. Edit it to translate the
-                      description into rules, or let AI decide.
-                    </div>
-                  )}
-                </div>
+                <span className="font-medium text-gray-900 shrink-0">{commitmentType.name}</span>
+                <button
+                  className="shrink-0 text-xs text-blue-600 hover:underline"
+                  onClick={() => { setFilter(commitmentType.id); chooseView('list'); }}
+                >
+                  {counts.get(commitmentType.id) || 0} entries
+                </button>
+                {commitmentType.mode === 'ai' ? (
+                  <span className="shrink-0 rounded bg-violet-50 text-violet-700 px-1.5 py-0.5 text-xs">AI</span>
+                ) : !commitmentType.rules.length && (
+                  <span
+                    className="shrink-0 rounded bg-amber-50 text-amber-700 px-1.5 py-0.5 text-xs"
+                    title="Nothing is labelled with this type until it has rules. Edit it to translate the description into rules, or let AI decide."
+                  >
+                    no rules
+                  </span>
+                )}
+                <span className="flex-1 min-w-0 truncate text-gray-500" title={summary}>{summary}</span>
+                <span className="flex shrink-0 gap-3 text-xs">
+                  <button className="text-gray-600 hover:text-gray-900" onClick={() => openEdit(commitmentType)}>Edit</button>
+                  <button className="text-gray-600 hover:text-red-600" onClick={() => remove(commitmentType)}>Delete</button>
+                </span>
               </div>
-              <div className="flex gap-1 shrink-0">
-                <Button variant="ghost" onClick={() => openEdit(commitmentType)}>Edit</Button>
-                <Button variant="ghost" onClick={() => remove(commitmentType)}>Delete</Button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
