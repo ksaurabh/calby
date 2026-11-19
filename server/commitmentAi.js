@@ -49,8 +49,12 @@ Notes:
 - Title matching is case-insensitive substring matching. Prefer a few short, likely
   words over long phrases, and use commas for alternatives.
 - Use separate rules for genuinely different cases ("X, or Y").
-- Express only what the description says. If part of it can't be expressed with
-  these fields, leave it out and say so in "unsupported".`;
+- For "everyone is from these companies/domains" use attendees allOnDomains with
+  the domains comma-separated; for "anyone from outside them" use anyNotOnDomains.
+- Express only what the description says. Never write a condition that means
+  something different from the description, not even as an approximation: if a
+  part can't be expressed with these fields, leave it out and say so in
+  "unsupported".`;
 
 const TRANSLATE_SCHEMA = {
   type: 'object',

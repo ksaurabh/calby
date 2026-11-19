@@ -20,8 +20,9 @@
 //   day           isOneOf                                ["mon", "tue", ...]
 //   allDay        is                                     true | false
 //   organizer     isMe | isNotMe | internal | external   —
-//   organizer     emailContains                          text; commas mean "any of"
-//   attendees     anyEmailContains | noEmailContains     text; commas mean "any of"
+//   organizer     emailContains | onDomains | notOnDomains   text; commas mean "any of"
+//   attendees     anyEmailContains | noEmailContains | allEmailContains   text; commas mean "any of"
+//   attendees     allOnDomains | anyOnDomains | anyNotOnDomains           domains, comma-separated
 //   attendees     anyExternal | allInternal              —
 //   attendeeCount atLeast | atMost                       number of other people
 //
@@ -62,18 +63,31 @@ export const FIELDS = {
       internal: 'is on my domain',
       external: 'is outside my domain',
       emailContains: 'email contains',
+      onDomains: 'is on one of the domains',
+      notOnDomains: 'is not on any of the domains',
     },
-    value: { emailContains: 'text' },
+    value: { emailContains: 'text', onDomains: 'text', notOnDomains: 'text' },
   },
   attendees: {
     label: 'Attendees',
     ops: {
       anyEmailContains: 'include an email containing',
       noEmailContains: 'include no email containing',
+      allEmailContains: 'all have an email containing',
+      allOnDomains: 'are all on the domains',
+      anyOnDomains: 'include someone on the domains',
+      anyNotOnDomains: 'include someone not on the domains',
       anyExternal: 'include someone outside my domain',
       allInternal: 'are all on my domain',
     },
-    value: { anyEmailContains: 'text', noEmailContains: 'text' },
+    value: {
+      anyEmailContains: 'text',
+      noEmailContains: 'text',
+      allEmailContains: 'text',
+      allOnDomains: 'text',
+      anyOnDomains: 'text',
+      anyNotOnDomains: 'text',
+    },
   },
   attendeeCount: {
     label: 'Number of attendees',
@@ -166,6 +180,12 @@ const terms = text =>
     .filter(Boolean);
 
 const domainOf = email => String(email || '').toLowerCase().split('@')[1] || '';
+
+// "airmdr.com" covers airmdr.com and its subdomains; a leading "@" is ignored.
+const onDomains = (email, value) => {
+  const d = domainOf(email);
+  return terms(value).map(t => t.replace(/^@/, '')).some(t => d === t || d.endsWith(`.${t}`));
+};
 const isRoom = email => /resource\.calendar\.google\.com$/i.test(email || '');
 
 const formatters = new Map();
@@ -253,11 +273,23 @@ export function conditionHolds(c, f) {
       if (c.op === 'internal') return f.organizerInternal;
       if (c.op === 'external') return !f.organizerInternal;
       if (c.op === 'emailContains') return terms(c.value).some(t => f.organizerEmail.includes(t));
+      if (c.op === 'onDomains') return onDomains(f.organizerEmail || `x@${f.myDomain}`, c.value);
+      if (c.op === 'notOnDomains') return !onDomains(f.organizerEmail || `x@${f.myDomain}`, c.value);
       return false;
     case 'attendees': {
       const list = terms(c.value);
       if (c.op === 'anyEmailContains') return f.attendeeEmails.some(e => list.some(t => e.includes(t)));
       if (c.op === 'noEmailContains') return !f.attendeeEmails.some(e => list.some(t => e.includes(t)));
+      // "All" needs at least one attendee — an entry with nobody else in it
+      // says nothing about who attends.
+      if (c.op === 'allEmailContains') {
+        return f.attendeeEmails.length > 0 && f.attendeeEmails.every(e => list.some(t => e.includes(t)));
+      }
+      if (c.op === 'allOnDomains') {
+        return f.attendeeEmails.length > 0 && f.attendeeEmails.every(e => onDomains(e, c.value));
+      }
+      if (c.op === 'anyOnDomains') return f.attendeeEmails.some(e => onDomains(e, c.value));
+      if (c.op === 'anyNotOnDomains') return f.attendeeEmails.some(e => !onDomains(e, c.value));
       if (c.op === 'anyExternal') return f.attendeeEmails.some(e => domainOf(e) !== f.myDomain);
       if (c.op === 'allInternal') return f.attendeeEmails.every(e => domainOf(e) === f.myDomain);
       return false;
