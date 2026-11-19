@@ -400,16 +400,15 @@ export function CommitmentTypesPage() {
                   <thead>
                     <tr className="text-left text-xs text-gray-500 border-b border-gray-200">
                       <th className="py-2 pr-3 font-medium">Time</th>
-                      <th className="py-2 pr-3 font-medium">Title</th>
+                      <th className="py-2 pr-3 font-medium">Title and type</th>
                       <th className="py-2 pr-3 font-medium">Length</th>
                       <th className="py-2 pr-3 font-medium">Organizer</th>
-                      <th className="py-2 pr-3 font-medium">Attendees</th>
-                      <th className="py-2 font-medium">Type</th>
+                      <th className="py-2 font-medium">Attendees</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.length === 0 ? (
-                      <tr><td colSpan={6} className="py-6 text-center text-gray-500">No entries.</td></tr>
+                      <tr><td colSpan={5} className="py-6 text-center text-gray-500">No entries.</td></tr>
                     ) : rows.map((e, i) => {
                       const m = mapping.get(e.id);
                       const type = typeById(m?.typeId);
@@ -421,7 +420,7 @@ export function CommitmentTypesPage() {
                         <Fragment key={e.id}>
                           {newDay && (
                             <tr>
-                              <td colSpan={6} className="pt-4 pb-1 text-xs font-semibold text-gray-700 border-b border-gray-200">
+                              <td colSpan={5} className="pt-4 pb-1 text-xs font-semibold text-gray-700 border-b border-gray-200">
                                 {day}
                               </td>
                             </tr>
@@ -433,32 +432,29 @@ export function CommitmentTypesPage() {
                             <td className="py-2 pr-3 whitespace-nowrap text-gray-600">
                               {e.allDay ? 'All day' : formatTime(e.start, timezone)}
                             </td>
-                            <td className="py-2 pr-3 text-gray-900 max-w-xs truncate">
-                              <span
-                                className="inline-block w-1 h-3.5 rounded-sm mr-2 align-middle"
-                                style={{ backgroundColor: type?.color || '#d1d5db' }}
-                              />
-                              {e.summary}
+                            <td className="py-2 pr-3">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-gray-900 truncate">{e.summary}</span>
+                                {type ? (
+                                  <span
+                                    className="shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border whitespace-nowrap"
+                                    style={{ backgroundColor: `${type.color}1a`, borderColor: type.color }}
+                                    title={m!.ruleIndex < 0 ? 'Decided by AI' : `Matched rule ${m!.ruleIndex + 1}`}
+                                  >
+                                    {type.name}
+                                    <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
+                                  </span>
+                                ) : (
+                                  <span className="shrink-0 text-xs text-gray-400 whitespace-nowrap">no type</span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-2 pr-3 whitespace-nowrap text-gray-600">{e.allDay ? '—' : `${minutes}m`}</td>
                             <td className="py-2 pr-3 text-gray-600 max-w-[12rem] truncate">
                               {!e.organizer || e.organizer.self ? 'you' : e.organizer.email}
                             </td>
-                            <td className="py-2 pr-3 text-gray-600 max-w-[14rem] truncate" title={others.map(a => a.email).join(', ')}>
+                            <td className="py-2 text-gray-600 max-w-[14rem] truncate" title={others.map(a => a.email).join(', ')}>
                               {others.length ? `${others.length} · ${others.map(a => a.email).join(', ')}` : '—'}
-                            </td>
-                            <td className="py-2 whitespace-nowrap">
-                              {type ? (
-                                <span
-                                  className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs border"
-                                  style={{ backgroundColor: `${type.color}1a`, borderColor: type.color }}
-                                >
-                                  {type.name}
-                                  <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
-                                </span>
-                              ) : (
-                                <span className="text-xs text-gray-400">none</span>
-                              )}
                             </td>
                           </tr>
                         </Fragment>
