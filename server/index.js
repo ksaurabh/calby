@@ -481,8 +481,11 @@ function saveCommitmentTypes(commitmentTypes) {
 
 // Colours are picked from a fixed palette so the calendar stays legible.
 const COMMITMENT_COLORS = [
-  '#2563eb', '#7c3aed', '#db2777', '#dc2626', '#ea580c',
-  '#ca8a04', '#16a34a', '#0d9488', '#0891b2', '#4b5563',
+  '#2563eb', '#db2777', '#dc2626', '#ea580c', '#ca8a04',
+  '#0d9488', '#0891b2', '#4b5563',
+  // Four greens and four purples, dark to light, for related types.
+  '#14532d', '#16a34a', '#4ade80', '#86efac',
+  '#4c1d95', '#7c3aed', '#a78bfa', '#c4b5fd',
 ];
 
 function getBookings() {
