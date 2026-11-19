@@ -131,7 +131,7 @@ export const api = {
     }),
 
   translateRules: (description: string) =>
-    request<{ rules: CommitmentRule[]; unsupported: string }>('/api/commitment-types/translate', {
+    request<{ rules: CommitmentRule[] }>('/api/commitment-types/translate', {
       method: 'POST',
       body: JSON.stringify({ description }),
     }),

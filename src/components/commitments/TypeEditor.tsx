@@ -39,7 +39,7 @@ export function TypeEditor({
   const [error, setError] = useState<string | null>(null);
 
   const [translating, setTranslating] = useState(false);
-  const [unsupported, setUnsupported] = useState('');
+  const [translateError, setTranslateError] = useState<string | null>(null);
 
   // The next two weeks of the calendar, fetched once when the editor opens.
   const [events, setEvents] = useState<CalendarEvent[] | null>(null);
@@ -64,18 +64,14 @@ export function TypeEditor({
 
   const translate = async () => {
     setTranslating(true);
-    setError(null);
-    setUnsupported('');
+    setTranslateError(null);
     try {
-      const { rules, unsupported } = await api.translateRules(draft.description);
-      if (!rules.length) {
-        setError('Couldn’t turn that into rules — try naming words in the title, who attends, times or lengths.');
-      } else {
-        set({ rules });
-      }
-      setUnsupported(unsupported);
+      // Fails outright if the description can't be captured exactly; the
+      // rules already there are left alone.
+      const { rules } = await api.translateRules(draft.description);
+      set({ rules });
     } catch (e) {
-      setError((e as Error).message);
+      setTranslateError((e as Error).message);
     } finally {
       setTranslating(false);
     }
@@ -206,6 +202,9 @@ export function TypeEditor({
             </Button>
           )}
         </div>
+        {translateError && draft.mode === 'rules' && (
+          <div className="rounded-lg bg-red-50 text-red-700 px-3 py-2 text-sm mt-2">{translateError}</div>
+        )}
         {draft.mode === 'ai' && (
           <p className="text-xs text-gray-500 mt-1">
             Claude reads each entry and decides whether it fits. Answers are remembered per
@@ -217,11 +216,6 @@ export function TypeEditor({
       {draft.mode === 'rules' && (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-2">Rules</label>
-          {unsupported && (
-            <div className="rounded-lg bg-amber-50 text-amber-800 px-3 py-2 text-xs mb-2">
-              Not covered by the rules: {unsupported}
-            </div>
-          )}
           <RuleList rules={draft.rules} onChange={rules => set({ rules })} />
         </div>
       )}

@@ -84,7 +84,7 @@ const TRANSLATE_SCHEMA = {
     },
     unsupported: {
       type: 'string',
-      description: 'Anything in the description the rules could not express, or empty',
+      description: 'Exactly what in the description the rules cannot express. Empty only when the rules capture the whole description.',
     },
   },
   required: ['rules', 'unsupported'],
@@ -128,7 +128,23 @@ export async function translateToRules(description, { apiKey, email, keySource }
   }, { apiKey, email, keySource, feature: 'rule-translation' });
 
   const block = response.content.find(b => b.type === 'tool_use');
-  return { rules: rulesFromModel(block?.input?.rules), unsupported: block?.input?.unsupported || '' };
+  // All or nothing: rules that capture only part of the description would
+  // quietly label entries differently from what was asked.
+  const unsupported = String(block?.input?.unsupported || '').trim();
+  if (unsupported && !/^(none|n\/a|nothing)\.?$/i.test(unsupported)) {
+    const err = new Error(`Couldn't translate this accurately: ${unsupported} Reword the description, write the rules by hand, or let AI decide.`);
+    err.status = 422;
+    throw err;
+  }
+  const rules = rulesFromModel(block?.input?.rules);
+  const proposed = (block?.input?.rules || []).reduce((n, r) => n + (r.conditions || []).length, 0);
+  const kept = rules.reduce((n, r) => n + r.conditions.length, 0);
+  if (!rules.length || kept < proposed) {
+    const err = new Error('Couldn\u2019t translate this accurately into rules. Reword the description, write the rules by hand, or let AI decide.');
+    err.status = 422;
+    throw err;
+  }
+  return { rules };
 }
 
 /** The model's string-valued rules, typed and validated. */
