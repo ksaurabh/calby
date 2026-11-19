@@ -5,6 +5,7 @@ import { api } from '../../utils/api';
 import { formatTime } from '../../utils/format';
 import { AvailabilityCalendar } from '../calendar';
 import { Button, Modal } from '../common';
+import { BookedTimeChart } from './BookedTimeChart';
 import { CalendarChat } from './CalendarChat';
 import { RuleCheck } from './RuleEditor';
 import { TypeEditor } from './TypeEditor';
@@ -92,7 +93,8 @@ export function CommitmentTypesPage() {
   const loadCalendar = useCallback(async () => {
     setCalendarLoading(true);
     try {
-      const data = await api.calendarEvents();
+      // Eight days back, so the chart's first day is whole.
+      const data = await api.calendarEvents({ back: 8, forward: 28 });
       setEvents(data.events);
       setTimezone(data.timezone);
       setOwnerEmail(data.ownerEmail);
@@ -333,6 +335,18 @@ export function CommitmentTypesPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Hours booked per day by commitment type, last 7 days and next 7 */}
+      {!calendarLoading && !calendarError && loadedAt > 0 && (
+        <div className="mt-8 bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="font-semibold text-gray-900">Time booked by commitment type</h2>
+          <p className="text-xs text-gray-500 mt-1 mb-3">
+            Hours per day, last 7 days and next 7. Counts timed entries that block your
+            calendar — not all-day entries, ones shown as free, or ones you declined.
+          </p>
+          <BookedTimeChart events={labelled} commitmentTypes={commitmentTypes} timezone={timezone} now={loadedAt} />
         </div>
       )}
 
