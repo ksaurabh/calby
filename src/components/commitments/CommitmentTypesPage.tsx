@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import type { CalendarEvent, CommitmentRule, CommitmentType } from '../../types';
 import { classifyEvents, describeRule } from '../../../shared/commitmentRules';
 import { api } from '../../utils/api';
-import { formatDateTime } from '../../utils/format';
+import { formatTime } from '../../utils/format';
 import { AvailabilityCalendar } from '../calendar';
 import { Button, Modal } from '../common';
 import { CalendarChat } from './CalendarChat';
@@ -41,6 +41,23 @@ const EXAMPLES: { name: string; description: string; rules: CommitmentRule[] }[]
 ];
 
 const UNMATCHED = '__none';
+const VIEW_KEY = 'commitments.calendarView';
+
+// "Mon, Nov 18" in the owner's timezone; an all-day entry's date as written.
+const dayLabel = (e: CalendarEvent, timeZone: string) =>
+  e.allDay
+    ? new Date(`${e.start.slice(0, 10)}T12:00:00Z`).toLocaleDateString(undefined, {
+        weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC',
+      })
+    : new Date(e.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', timeZone });
+
+function savedView(): 'calendar' | 'list' {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'calendar';
+  } catch {
+    return 'calendar';
+  }
+}
 
 export function CommitmentTypesPage() {
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
@@ -60,6 +77,15 @@ export function CommitmentTypesPage() {
 
   const [filter, setFilter] = useState<string>('');
   const [search, setSearch] = useState('');
+  const [view, setView] = useState<'calendar' | 'list'>(savedView);
+  const chooseView = (v: 'calendar' | 'list') => {
+    setView(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // Remembering the choice is only a convenience.
+    }
+  };
 
   const loadCalendar = useCallback(async () => {
     setCalendarLoading(true);
@@ -262,7 +288,7 @@ export function CommitmentTypesPage() {
                     {commitmentType.name}
                     <button
                       className="ml-2 text-xs font-normal text-blue-600 hover:underline"
-                      onClick={() => setFilter(commitmentType.id)}
+                      onClick={() => { setFilter(commitmentType.id); chooseView('list'); }}
                     >
                       {counts.get(commitmentType.id) || 0} entries
                     </button>
@@ -298,14 +324,15 @@ export function CommitmentTypesPage() {
         </div>
       )}
 
-      {/* Calendar coloured by commitment type, plus the assistant */}
-      <div className="mt-8 grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex items-center justify-between mb-4">
+      {/* Calendar coloured by commitment type, as a grid or a list, plus the assistant */}
+      <div className={`mt-8 grid gap-6 ${view === 'calendar' ? 'lg:grid-cols-3' : ''}`}>
+        <div className={`${view === 'calendar' ? 'lg:col-span-2' : ''} bg-white rounded-xl border border-gray-200 p-5`}>
+          <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
             <div>
               <h2 className="font-semibold text-gray-900">Your calendar</h2>
               <p className="text-xs text-gray-500 mt-1">
-                Coloured by commitment type. Click an entry to see which rules match it.
+                Last week through the next four, coloured by commitment type. Click an entry
+                to see which rules match it.
               </p>
               {!calendarLoading && !calendarError && (
                 <p className="text-xs text-gray-500 mt-1">
@@ -316,110 +343,136 @@ export function CommitmentTypesPage() {
                 <p key={err} className="text-xs text-amber-700 mt-1">{err}</p>
               ))}
             </div>
-            <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-lg border border-gray-300 p-0.5" role="tablist">
+                {(['calendar', 'list'] as const).map(v => (
+                  <button
+                    key={v}
+                    role="tab"
+                    aria-selected={view === v}
+                    onClick={() => chooseView(v)}
+                    className={`px-3 py-1 text-sm rounded-md ${
+                      view === v ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    {v === 'calendar' ? 'Calendar' : 'List'}
+                  </button>
+                ))}
+              </div>
+              <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
+            </div>
           </div>
 
           {calendarError ? (
             <div className="rounded-lg bg-amber-50 text-amber-800 px-4 py-3 text-sm">{calendarError}</div>
           ) : calendarLoading ? (
             <div className="py-10 text-center text-gray-500">Loading your calendar…</div>
-          ) : (
+          ) : view === 'calendar' ? (
             <AvailabilityCalendar
               events={labelled}
               commitmentTypes={commitmentTypes}
               window={{ timezone, startMinute: 8 * 60, endMinute: 19 * 60, weeks: 4 }}
               onSelectEvent={setChecking}
             />
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2 mb-3">
+                <input
+                  className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm outline-none focus:border-blue-500 flex-1 min-w-48"
+                  placeholder="Search title or email"
+                  value={search}
+                  onChange={e => setSearch(e.target.value)}
+                />
+                <select
+                  className="rounded-lg border border-gray-300 px-2 py-1.5 text-sm bg-white"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                >
+                  <option value="">All types ({events.length})</option>
+                  {commitmentTypes.map(t => (
+                    <option key={t.id} value={t.id}>{t.name} ({counts.get(t.id) || 0})</option>
+                  ))}
+                  <option value={UNMATCHED}>No type ({events.length - mapping.size})</option>
+                </select>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-gray-500 border-b border-gray-200">
+                      <th className="py-2 pr-3 font-medium">Time</th>
+                      <th className="py-2 pr-3 font-medium">Title</th>
+                      <th className="py-2 pr-3 font-medium">Length</th>
+                      <th className="py-2 pr-3 font-medium">Organizer</th>
+                      <th className="py-2 pr-3 font-medium">Attendees</th>
+                      <th className="py-2 font-medium">Type</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr><td colSpan={6} className="py-6 text-center text-gray-500">No entries.</td></tr>
+                    ) : rows.map((e, i) => {
+                      const m = mapping.get(e.id);
+                      const type = typeById(m?.typeId);
+                      const others = (e.attendees || []).filter(a => !a.self && !/resource\.calendar/.test(a.email));
+                      const minutes = Math.round((Date.parse(e.end) - Date.parse(e.start)) / 60000);
+                      const day = dayLabel(e, timezone);
+                      const newDay = i === 0 || dayLabel(rows[i - 1], timezone) !== day;
+                      return (
+                        <Fragment key={e.id}>
+                          {newDay && (
+                            <tr>
+                              <td colSpan={6} className="pt-4 pb-1 text-xs font-semibold text-gray-700 border-b border-gray-200">
+                                {day}
+                              </td>
+                            </tr>
+                          )}
+                          <tr
+                            className="hover:bg-gray-50 cursor-pointer border-b border-gray-100"
+                            onClick={() => setChecking(e)}
+                          >
+                            <td className="py-2 pr-3 whitespace-nowrap text-gray-600">
+                              {e.allDay ? 'All day' : formatTime(e.start, timezone)}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-900 max-w-xs truncate">
+                              <span
+                                className="inline-block w-1 h-3.5 rounded-sm mr-2 align-middle"
+                                style={{ backgroundColor: type?.color || '#d1d5db' }}
+                              />
+                              {e.summary}
+                            </td>
+                            <td className="py-2 pr-3 whitespace-nowrap text-gray-600">{e.allDay ? '—' : `${minutes}m`}</td>
+                            <td className="py-2 pr-3 text-gray-600 max-w-[12rem] truncate">
+                              {!e.organizer || e.organizer.self ? 'you' : e.organizer.email}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-600 max-w-[14rem] truncate" title={others.map(a => a.email).join(', ')}>
+                              {others.length ? `${others.length} · ${others.map(a => a.email).join(', ')}` : '—'}
+                            </td>
+                            <td className="py-2 whitespace-nowrap">
+                              {type ? (
+                                <span
+                                  className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs border"
+                                  style={{ backgroundColor: `${type.color}1a`, borderColor: type.color }}
+                                >
+                                  {type.name}
+                                  <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-400">none</span>
+                              )}
+                            </td>
+                          </tr>
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
 
         <CalendarChat />
       </div>
-
-      {/* Every entry and the type it was given, to check the rules against */}
-      {!calendarLoading && !calendarError && (
-        <div className="mt-8 bg-white rounded-xl border border-gray-200 p-5">
-          <div className="flex flex-wrap items-end justify-between gap-3 mb-4">
-            <div>
-              <h2 className="font-semibold text-gray-900">Entries and their types</h2>
-              <p className="text-xs text-gray-500 mt-1">
-                Last week through the next four. Click a row to see why it got its type.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <input
-                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm outline-none focus:border-blue-500"
-                placeholder="Search title or email"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
-              <select
-                className="rounded-lg border border-gray-300 px-2 py-1.5 text-sm bg-white"
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
-              >
-                <option value="">All types ({events.length})</option>
-                {commitmentTypes.map(t => (
-                  <option key={t.id} value={t.id}>{t.name} ({counts.get(t.id) || 0})</option>
-                ))}
-                <option value={UNMATCHED}>No type ({events.length - mapping.size})</option>
-              </select>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-gray-500 border-b border-gray-200">
-                  <th className="py-2 pr-3 font-medium">When</th>
-                  <th className="py-2 pr-3 font-medium">Title</th>
-                  <th className="py-2 pr-3 font-medium">Length</th>
-                  <th className="py-2 pr-3 font-medium">Organizer</th>
-                  <th className="py-2 pr-3 font-medium">Attendees</th>
-                  <th className="py-2 font-medium">Type</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {rows.length === 0 ? (
-                  <tr><td colSpan={6} className="py-6 text-center text-gray-500">No entries.</td></tr>
-                ) : rows.map(e => {
-                  const m = mapping.get(e.id);
-                  const type = typeById(m?.typeId);
-                  const others = (e.attendees || []).filter(a => !a.self && !/resource\.calendar/.test(a.email));
-                  const minutes = Math.round((Date.parse(e.end) - Date.parse(e.start)) / 60000);
-                  return (
-                    <tr key={e.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => setChecking(e)}>
-                      <td className="py-2 pr-3 whitespace-nowrap text-gray-600">
-                        {e.allDay ? `${e.start.slice(0, 10)} · all day` : formatDateTime(e.start, timezone)}
-                      </td>
-                      <td className="py-2 pr-3 text-gray-900 max-w-xs truncate">{e.summary}</td>
-                      <td className="py-2 pr-3 whitespace-nowrap text-gray-600">{e.allDay ? '—' : `${minutes}m`}</td>
-                      <td className="py-2 pr-3 text-gray-600 max-w-[12rem] truncate">
-                        {!e.organizer || e.organizer.self ? 'you' : e.organizer.email}
-                      </td>
-                      <td className="py-2 pr-3 text-gray-600 max-w-[14rem] truncate" title={others.map(a => a.email).join(', ')}>
-                        {others.length ? `${others.length} · ${others.map(a => a.email).join(', ')}` : '—'}
-                      </td>
-                      <td className="py-2 whitespace-nowrap">
-                        {type ? (
-                          <span
-                            className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs border"
-                            style={{ backgroundColor: `${type.color}1a`, borderColor: type.color }}
-                          >
-                            {type.name}
-                            <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">none</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
       <Modal isOpen={!!checking} onClose={() => setChecking(null)} title="Which rules match" size="wide">
         {checking && (
