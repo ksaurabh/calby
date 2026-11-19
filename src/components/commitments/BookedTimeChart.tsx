@@ -255,6 +255,48 @@ export function BookedTimeChart({
         </div>
       )}
 
+      {/* The coming week in total, per type */}
+      {series.length > 0 && (() => {
+        const rows = shown.map(s => ({ s, m: totals.get(s.id)!.next }));
+        const total = rows.reduce((a, r) => a + r.m, 0);
+        const max = Math.max(1, ...rows.map(r => r.m));
+        return (
+          <div className="mt-5 pt-4 border-t border-gray-100">
+            <div className="flex items-baseline justify-between mb-2">
+              <h3 className="text-sm font-medium text-gray-900">Next 7 days</h3>
+              <span className="text-sm tabular-nums text-gray-900">{hours(total)} booked</span>
+            </div>
+            {total === 0 ? (
+              <p className="text-sm text-gray-500">Nothing booked yet.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {rows.map(({ s, m }) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center gap-3 text-sm"
+                    onMouseEnter={() => m > 0 && setHover({ day: -1, series: s.id })}
+                    onMouseLeave={() => setHover(null)}
+                  >
+                    <span className="w-40 shrink-0 truncate text-gray-700" title={s.name}>{s.name}</span>
+                    <span className="flex-1 h-3">
+                      {m > 0 && (
+                        <span
+                          className="block h-full rounded-r"
+                          style={{ width: `${(m / max) * 100}%`, backgroundColor: s.color }}
+                        />
+                      )}
+                    </span>
+                    <span className="w-12 shrink-0 text-right tabular-nums text-gray-900">{hours(m)}</span>
+                    <span className="w-10 shrink-0 text-right tabular-nums text-gray-500 text-xs">
+                      {Math.round((m / total) * 100)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
