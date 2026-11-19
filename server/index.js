@@ -40,6 +40,7 @@ import {
   fingerprintOf,
 } from './classify.js';
 import { assignmentsFor, describeRules, sanitizeRules } from '../shared/commitmentRules.js';
+import { aiMatches, aiMatchesForTypes, translateToRules } from './commitmentAi.js';
 import {
   GUIDANCE_FIXABLE,
   askCalendar,
@@ -436,25 +437,42 @@ function getCommitmentTypes(ownerEmail) {
   return ownerEmail ? all.filter(t => t.ownerEmail === ownerEmail.toLowerCase()).map(withCondition) : all;
 }
 
-// `condition` is the plain-English reading of a type's rules, for the slot
-// review and the assistant. A type from before rules keeps its old text so
-// you can see what it meant while writing its rules.
+// `description` is what the owner wrote in plain English (a type from before
+// rules keeps its old condition there). `mode` is "rules" or "ai" — whether the
+// rules or a model reading the description decides. `condition` is the
+// plain-English meaning handed to the slot review and the assistant.
 function withCondition(t) {
   const rules = t.rules || [];
+  const mode = t.mode === 'ai' ? 'ai' : 'rules';
+  const description = t.description ?? t.condition ?? '';
   return {
     ...t,
     rules,
-    legacyCondition: rules.length ? null : t.condition || null,
-    condition: rules.length ? describeRules(rules) : t.condition || '',
+    mode,
+    description,
+    condition: mode === 'ai' || !rules.length ? description : describeRules(rules),
   };
 }
 
-// Label calendar entries with commitment types by their rules — instant, no model.
-function labelEvents(ownerEmail, events, timezone, commitmentTypes = getCommitmentTypes(ownerEmail)) {
-  return assignmentsFor(events, commitmentTypes, {
-    timezone: timezone || ownerTimezone(ownerEmail),
-    ownerEmail,
+// AI verdicts for any "let AI decide" types, as the shared classifier wants them.
+async function aiContext(ownerEmail, events, timezone, commitmentTypes) {
+  if (!commitmentTypes.some(t => t.mode === 'ai')) return { aiMatches: new Map(), errors: [] };
+  const key = anthropicKeyFor(ownerEmail);
+  const { matches, errors } = await aiMatchesForTypes(commitmentTypes, events, {
+    timezone,
+    apiKey: key.key,
+    email: ownerEmail,
+    keySource: key.source,
   });
+  return { aiMatches: matches, errors };
+}
+
+// Label calendar entries with commitment types: rules instantly, AI-decided
+// types from cached verdicts plus a model call for anything new.
+async function labelEvents(ownerEmail, events, timezone, commitmentTypes = getCommitmentTypes(ownerEmail)) {
+  const tz = timezone || ownerTimezone(ownerEmail);
+  const { aiMatches: ai } = await aiContext(ownerEmail, events, tz, commitmentTypes);
+  return assignmentsFor(events, commitmentTypes, { timezone: tz, ownerEmail, aiMatches: ai });
 }
 
 function saveCommitmentTypes(commitmentTypes) {
@@ -863,7 +881,7 @@ async function availabilityFor(
       progress('Fetching your calendar entries');
       events = await fetchEvents(token, now, horizonEnd);
     }
-    assignments = labelEvents(eventType.ownerEmail, events, eventType.rules.timezone, commitmentTypes);
+    assignments = await labelEvents(eventType.ownerEmail, events, eventType.rules.timezone, commitmentTypes);
   }
 
   // One decision function: the generator diagnoses every candidate, and keeps
@@ -1663,7 +1681,7 @@ async function previewAvailability(req, res, { duration, guidance, refresh }) {
 
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
-    const assignments = labelEvents(req.user.email, events, target.rules.timezone, commitmentTypes);
+    const assignments = await labelEvents(req.user.email, events, target.rules.timezone, commitmentTypes);
     progress('Done');
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
@@ -2293,8 +2311,9 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
 const CALENDAR_WINDOW = { back: 7, forward: 28 };
 
 function calendarWindow(query = {}) {
-  const back = Math.min(90, Math.max(0, Number(query.back) || CALENDAR_WINDOW.back));
-  const forward = Math.min(180, Math.max(1, Number(query.forward) || CALENDAR_WINDOW.forward));
+  const num = (v, fallback) => (v === undefined || v === '' || !Number.isFinite(Number(v)) ? fallback : Number(v));
+  const back = Math.min(90, Math.max(0, num(query.back, CALENDAR_WINDOW.back)));
+  const forward = Math.min(180, Math.max(1, num(query.forward, CALENDAR_WINDOW.forward)));
   const now = new Date();
   return {
     from: new Date(now.getTime() - back * 86400_000),
@@ -2319,7 +2338,7 @@ async function ownerEvents(req, { from, to, maxResults = 250 }) {
   const token = await accessTokenFor(req.user.email, calendar.refreshToken);
   const events = await fetchEvents(token, from, to, { maxResults });
   const commitmentTypes = getCommitmentTypes(req.user.email);
-  const assignments = labelEvents(req.user.email, events, null, commitmentTypes);
+  const assignments = await labelEvents(req.user.email, events, null, commitmentTypes);
   return { events, commitmentTypes, assignments };
 }
 
@@ -2334,12 +2353,19 @@ app.get('/api/calendar/events', requireAuth, async (req, res) => {
     const events = await fetchEvents(token, from, to);
     const commitmentTypes = getCommitmentTypes(req.user.email);
     const timezone = ownerTimezone(req.user.email);
-    // Labelled by rules, so the calendar comes back fully coloured at once.
-    const assignments = labelEvents(req.user.email, events, timezone, commitmentTypes);
+    const ai = await aiContext(req.user.email, events, timezone, commitmentTypes);
+    const assignments = assignmentsFor(events, commitmentTypes, {
+      timezone,
+      ownerEmail: req.user.email,
+      aiMatches: ai.aiMatches,
+    });
 
     res.json({
       events: events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null })),
       commitmentTypes,
+      // For "let AI decide" types: which entries the model said match.
+      aiMatches: Object.fromEntries([...ai.aiMatches].map(([id, set]) => [id, [...set]])),
+      aiErrors: ai.errors,
       timezone,
       ownerEmail: req.user.email.toLowerCase(),
       from: from.toISOString(),
@@ -2393,6 +2419,9 @@ app.get('/api/commitment-types', requireAuth, (req, res) => {
 app.post('/api/commitment-types', requireAuth, (req, res) => {
   const name = req.body.name?.trim();
   if (!name) return res.status(400).json({ error: 'A name is required' });
+  if (req.body.mode === 'ai' && !String(req.body.description || '').trim()) {
+    return res.status(400).json({ error: 'Describe the type in plain English for AI to decide by' });
+  }
 
   const all = getCommitmentTypes();
   const mine = all.filter(t => t.ownerEmail === req.user.email.toLowerCase());
@@ -2401,6 +2430,8 @@ app.post('/api/commitment-types', requireAuth, (req, res) => {
     id: generateId('ct'),
     ownerEmail: req.user.email.toLowerCase(),
     name,
+    description: String(req.body.description || '').trim().slice(0, 2000),
+    mode: req.body.mode === 'ai' ? 'ai' : 'rules',
     rules: sanitizeRules(req.body.rules),
     // Default to the next unused palette colour.
     color: COMMITMENT_COLORS.includes(req.body.color)
@@ -2424,11 +2455,54 @@ app.put('/api/commitment-types/:id', requireAuth, (req, res) => {
     ...all[index],
     name: req.body.name?.trim() || all[index].name,
     rules: Array.isArray(req.body.rules) ? sanitizeRules(req.body.rules) : all[index].rules || [],
+    description: typeof req.body.description === 'string'
+      ? req.body.description.trim().slice(0, 2000)
+      : all[index].description ?? all[index].condition ?? '',
+    mode: req.body.mode === 'ai' || req.body.mode === 'rules' ? req.body.mode : all[index].mode || 'rules',
     color: COMMITMENT_COLORS.includes(req.body.color) ? req.body.color : all[index].color,
     updatedAt: new Date().toISOString(),
   };
   saveCommitmentTypes(all);
   res.json(withCondition(all[index]));
+});
+
+// Plain English -> structured rules.
+app.post('/api/commitment-types/translate', requireAuth, async (req, res) => {
+  const description = String(req.body.description || '').trim();
+  if (!description) return res.status(400).json({ error: 'Describe the kind of entry first' });
+  if (description.length > 2000) return res.status(400).json({ error: 'That description is too long' });
+  try {
+    const key = anthropicKeyFor(req.user.email);
+    res.json(await translateToRules(description, { apiKey: key.key, email: req.user.email, keySource: key.source }));
+  } catch (err) {
+    console.error('[commitment-ai] translate failed:', err.message);
+    res.status(err.status || 502).json({ error: err.message });
+  }
+});
+
+// Which of the given window's entries AI says match a description — the
+// preview for a type set to "let AI decide", before it is saved.
+app.post('/api/commitment-types/ai-preview', requireAuth, async (req, res) => {
+  const description = String(req.body.description || '').trim();
+  if (!description) return res.status(400).json({ error: 'Describe the kind of entry first' });
+  const { from, to } = calendarWindow(req.body);
+  try {
+    const calendar = calendarFor(req.user.email);
+    if (!calendar?.refreshToken) return res.status(409).json({ error: 'Connect your Google Calendar first.' });
+    const token = await accessTokenFor(req.user.email, calendar.refreshToken);
+    const events = await fetchEvents(token, from, to);
+    const key = anthropicKeyFor(req.user.email);
+    const { matched, error } = await aiMatches(description, events, {
+      timezone: ownerTimezone(req.user.email),
+      apiKey: key.key,
+      email: req.user.email,
+      keySource: key.source,
+    });
+    if (error && !matched.size) return res.status(502).json({ error });
+    res.json({ matchedIds: [...matched], error });
+  } catch (err) {
+    res.status(err.status || 502).json({ error: err.message });
+  }
 });
 
 // Set the priority order of your commitment types (ids, highest first).
@@ -2644,7 +2718,7 @@ function assistantToolkit(email) {
         const token = await accessTokenFor(email, calendar.refreshToken);
         const events = await fetchEvents(token, from, to);
         const commitmentTypes = getCommitmentTypes(email);
-        const assignments = labelEvents(email, events, timezone, commitmentTypes);
+        const assignments = await labelEvents(email, events, timezone, commitmentTypes);
         return `Calendar ${startDate} to ${endDate}:\n` +
           buildCalendarContext({ events, timezone, commitmentTypes, assignments });
       },

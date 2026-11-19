@@ -1,6 +1,6 @@
-// A small on-disk cache for model answers worth keeping across restarts — the
-// commitment-aware slot review is keyed by the caller's own fingerprint here.
-// (Calendar entries are labelled with commitment types by rules, in
+// A small on-disk cache for model answers worth keeping across restarts: the
+// commitment-aware slot review, and AI verdicts for commitment types set to
+// "let AI decide". (Types using rules are labelled by
 // shared/commitmentRules.js, with no model and nothing to cache.)
 import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -94,6 +94,15 @@ export function cachedSlotReview(key) {
 
 export function cacheSlotReview(key, value) {
   cacheSet(`review:${key}`, value);
+}
+
+// AI verdicts on "does this entry match this commitment type's description".
+export function cachedVerdict(key) {
+  return cacheGet(`verdict:${key}`);
+}
+
+export function cacheVerdict(key, value) {
+  cacheSet(`verdict:${key}`, value);
 }
 
 /** Stable short hash, for callers building their own cache keys. */

@@ -408,17 +408,19 @@ export interface ChatMessage {
 
 /**
  * A kind of calendar entry, plus a colour. Entries are labelled by `rules`
- * (any rule whose conditions all hold); types are listed in priority order.
+ * (any rule whose conditions all hold) or, in "ai" mode, by a model reading
+ * `description`. Types are listed in priority order.
  */
 export interface CommitmentType {
   id: string;
   ownerEmail: string;
   name: string;
+  /** What it means, in plain English. */
+  description: string;
+  mode: 'rules' | 'ai';
   rules: CommitmentRule[];
-  /** Plain-English reading of the rules. */
+  /** Plain-English meaning used by the slot review and the assistant. */
   condition: string;
-  /** The old plain-English condition of a type that has no rules yet. */
-  legacyCondition?: string | null;
   color: string;
   createdAt: string;
   updatedAt: string;
@@ -426,6 +428,8 @@ export interface CommitmentType {
 
 export interface CommitmentTypeInput {
   name: string;
+  description: string;
+  mode: 'rules' | 'ai';
   rules: CommitmentRule[];
   color?: string;
 }

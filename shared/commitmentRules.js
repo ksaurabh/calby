@@ -6,7 +6,11 @@
 // to the first commitment type, in list order, that has a rule all of whose
 // conditions hold.
 //
-// A commitment type:  { id, name, rules: [{ id, conditions: [Condition] }] }
+// A commitment type:  { id, name, mode, description, rules: [{ id, conditions: [Condition] }] }
+//
+// mode "rules" (the default) matches by the rules below. mode "ai" lets a model
+// decide from the description instead; its verdicts are worked out on the
+// server and passed in as context.aiMatches (Map of type id -> Set of event ids).
 // A condition:        { field, op, value }
 //
 //   field         ops                                   value
@@ -270,16 +274,27 @@ export function conditionHolds(c, f) {
 const ruleHolds = (rule, f) => rule.conditions.length > 0 && rule.conditions.every(c => conditionHolds(c, f));
 
 /**
+ * Which rule of a type matches (its index), -1 for an AI-decided match, or
+ * null for no match.
+ */
+export function typeMatch(type, event, facts, context) {
+  if (type.mode === 'ai') return context?.aiMatches?.get(type.id)?.has(event.id) ? -1 : null;
+  const i = (type.rules || []).findIndex(rule => ruleHolds(rule, facts));
+  return i >= 0 ? i : null;
+}
+
+/**
  * Label entries: Map of event id -> { typeId, ruleIndex } for the first type
- * (in the order given) with a rule that holds. Unmatched entries are absent.
+ * (in the order given) that matches. ruleIndex is -1 when AI decided.
+ * Unmatched entries are absent.
  */
 export function classifyEvents(events, commitmentTypes, context) {
   const out = new Map();
   for (const event of events) {
     const f = eventFacts(event, context);
     for (const type of commitmentTypes) {
-      const ruleIndex = (type.rules || []).findIndex(rule => ruleHolds(rule, f));
-      if (ruleIndex >= 0) {
+      const ruleIndex = typeMatch(type, event, f, context);
+      if (ruleIndex !== null) {
         out.set(event.id, { typeId: type.id, ruleIndex });
         break;
       }
@@ -307,7 +322,7 @@ export function explainEvent(event, commitmentTypes, context) {
       const conditions = rule.conditions.map(c => ({ ...c, holds: conditionHolds(c, f), text: describeCondition(c) }));
       return { id: rule.id, holds: conditions.length > 0 && conditions.every(c => c.holds), conditions };
     });
-    const matches = rules.some(r => r.holds);
+    const matches = type.mode === 'ai' ? typeMatch(type, event, f, context) !== null : rules.some(r => r.holds);
     if (matches && !winner) winner = type.id;
     return { typeId: type.id, matches, rules };
   });

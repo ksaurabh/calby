@@ -6,19 +6,20 @@ import { formatDateTime } from '../../utils/format';
 import { AvailabilityCalendar } from '../calendar';
 import { Button, Modal } from '../common';
 import { CalendarChat } from './CalendarChat';
-import { RuleCheck, RuleList, RulePreview } from './RuleEditor';
+import { RuleCheck } from './RuleEditor';
+import { TypeEditor } from './TypeEditor';
+import type { TypeDraft } from './TypeEditor';
 import { newRuleId } from './ruleIds';
 
-const inputClass =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none';
-
-const EXAMPLES: { name: string; rules: CommitmentRule[] }[] = [
+const EXAMPLES: { name: string; description: string; rules: CommitmentRule[] }[] = [
   {
     name: 'Customer calls',
+    description: 'Meetings with anyone outside my domain',
     rules: [{ id: 'x1', conditions: [{ field: 'attendees', op: 'anyExternal', value: null }] }],
   },
   {
     name: 'Internal',
+    description: 'Meetings where everyone is on my domain',
     rules: [{
       id: 'x2',
       conditions: [
@@ -29,34 +30,30 @@ const EXAMPLES: { name: string; rules: CommitmentRule[] }[] = [
   },
   {
     name: 'Focus time',
+    description: 'Blocks I hold for focus or deep work',
     rules: [{ id: 'x3', conditions: [{ field: 'title', op: 'contains', value: 'focus, deep work, writing' }] }],
   },
   {
     name: 'Personal',
+    description: 'Appointments, travel and time off',
     rules: [{ id: 'x4', conditions: [{ field: 'title', op: 'contains', value: 'dentist, doctor, flight, pto, vacation' }] }],
   },
 ];
-
-interface FormState {
-  id: string | null;
-  name: string;
-  rules: CommitmentRule[];
-  color: string;
-}
 
 const UNMATCHED = '__none';
 
 export function CommitmentTypesPage() {
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
   const [colors, setColors] = useState<string[]>([]);
-  const [form, setForm] = useState<FormState | null>(null);
+  const [form, setForm] = useState<TypeDraft | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [timezone, setTimezone] = useState('UTC');
   const [ownerEmail, setOwnerEmail] = useState('');
+  const [aiMatches, setAiMatches] = useState<Map<string, Set<string>>>(new Map());
+  const [aiErrors, setAiErrors] = useState<string[]>([]);
   const [calendarError, setCalendarError] = useState<string | null>(null);
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [checking, setChecking] = useState<CalendarEvent | null>(null);
@@ -71,6 +68,8 @@ export function CommitmentTypesPage() {
       setEvents(data.events);
       setTimezone(data.timezone);
       setOwnerEmail(data.ownerEmail);
+      setAiMatches(new Map(Object.entries(data.aiMatches || {}).map(([id, ids]) => [id, new Set(ids)])));
+      setAiErrors(data.aiErrors || []);
       setCalendarError(null);
     } catch (e) {
       setCalendarError((e as Error).message);
@@ -100,8 +99,8 @@ export function CommitmentTypesPage() {
   // Labels come from the rules, worked out right here — the same code the
   // server runs — so edits show up immediately.
   const mapping = useMemo(
-    () => classifyEvents(events, commitmentTypes, { timezone, ownerEmail }),
-    [events, commitmentTypes, timezone, ownerEmail]
+    () => classifyEvents(events, commitmentTypes, { timezone, ownerEmail, aiMatches }),
+    [events, commitmentTypes, timezone, ownerEmail, aiMatches]
   );
   const labelled = useMemo(
     () => events.map(e => ({ ...e, commitmentTypeId: mapping.get(e.id)?.typeId || null })),
@@ -132,12 +131,13 @@ export function CommitmentTypesPage() {
 
   const typeById = (id: string | null | undefined) => commitmentTypes.find(t => t.id === id);
 
-  const openNew = (preset?: { name: string; rules: CommitmentRule[] }) =>
+  const openNew = (preset?: { name: string; description: string; rules: CommitmentRule[] }) =>
     setForm({
       id: null,
       name: preset?.name || '',
-      rules: (preset?.rules || [{ id: newRuleId(), conditions: [{ field: 'title', op: 'contains', value: '' }] }])
-        .map(r => ({ ...r, id: newRuleId() })),
+      description: preset?.description || '',
+      mode: 'rules',
+      rules: (preset?.rules || []).map(r => ({ ...r, id: newRuleId() })),
       color: colors[commitmentTypes.length % (colors.length || 1)] || '#2563eb',
     });
 
@@ -145,26 +145,26 @@ export function CommitmentTypesPage() {
     setForm({
       id: t.id,
       name: t.name,
+      description: t.description || '',
+      mode: extraRule ? 'rules' : t.mode,
       rules: [...(t.rules || []), ...(extraRule ? [extraRule] : [])],
       color: t.color,
     });
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const payload = { name: form.name.trim(), rules: form.rules, color: form.color };
-      if (form.id) await api.updateCommitmentType(form.id, payload);
-      else await api.createCommitmentType(payload);
-      setForm(null);
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  const save = async (draft: TypeDraft) => {
+    const payload = {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      mode: draft.mode,
+      rules: draft.rules,
+      color: draft.color,
+    };
+    if (draft.id) await api.updateCommitmentType(draft.id, payload);
+    else await api.createCommitmentType(payload);
+    setForm(null);
+    await load();
+    // AI-decided types are labelled on the server, so re-read the calendar.
+    if (draft.mode === 'ai') await loadCalendar();
   };
 
   const remove = async (commitmentType: CommitmentType) => {
@@ -225,7 +225,7 @@ export function CommitmentTypesPage() {
                 className="text-left border border-gray-200 rounded-lg p-3 hover:border-blue-500 hover:bg-blue-50 transition-colors"
               >
                 <div className="text-sm font-medium text-gray-900">{example.name}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{example.rules.map(describeRule).join('; or ')}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{example.description}</div>
               </button>
             ))}
           </div>
@@ -267,8 +267,13 @@ export function CommitmentTypesPage() {
                       {counts.get(commitmentType.id) || 0} entries
                     </button>
                   </div>
-                  {commitmentType.rules.length ? (
-                    <ul className="text-sm text-gray-600 mt-0.5 space-y-0.5">
+                  {commitmentType.description && (
+                    <div className="text-sm text-gray-700 mt-0.5">{commitmentType.description}</div>
+                  )}
+                  {commitmentType.mode === 'ai' ? (
+                    <div className="text-xs text-violet-700 mt-0.5">AI decides from the description</div>
+                  ) : commitmentType.rules.length ? (
+                    <ul className="text-xs text-gray-500 mt-0.5 space-y-0.5">
                       {commitmentType.rules.map((rule, i) => (
                         <li key={rule.id}>
                           {i > 0 && <span className="text-gray-400">or </span>}
@@ -277,17 +282,15 @@ export function CommitmentTypesPage() {
                       ))}
                     </ul>
                   ) : (
-                    <div className="text-sm text-amber-700 mt-0.5">
-                      No rules yet, so nothing is labelled with this type.
-                      {commitmentType.legacyCondition && (
-                        <span className="text-gray-500"> It used to mean: “{commitmentType.legacyCondition}”.</span>
-                      )}
+                    <div className="text-xs text-amber-700 mt-0.5">
+                      No rules yet, so nothing is labelled with this type. Edit it to translate the
+                      description into rules, or let AI decide.
                     </div>
                   )}
                 </div>
               </div>
               <div className="flex gap-1 shrink-0">
-                <Button variant="ghost" onClick={() => openEdit(commitmentType)}>Edit rules</Button>
+                <Button variant="ghost" onClick={() => openEdit(commitmentType)}>Edit</Button>
                 <Button variant="ghost" onClick={() => remove(commitmentType)}>Delete</Button>
               </div>
             </div>
@@ -309,6 +312,9 @@ export function CommitmentTypesPage() {
                   {mapping.size} of {events.length} entries matched a commitment type
                 </p>
               )}
+              {aiErrors.map(err => (
+                <p key={err} className="text-xs text-amber-700 mt-1">{err}</p>
+              ))}
             </div>
             <Button variant="secondary" onClick={loadCalendar}>Refresh</Button>
           </div>
@@ -400,7 +406,7 @@ export function CommitmentTypesPage() {
                             style={{ backgroundColor: `${type.color}1a`, borderColor: type.color }}
                           >
                             {type.name}
-                            <span className="text-gray-500">rule {m!.ruleIndex + 1}</span>
+                            <span className="text-gray-500">{m!.ruleIndex < 0 ? 'AI' : `rule ${m!.ruleIndex + 1}`}</span>
                           </span>
                         ) : (
                           <span className="text-xs text-gray-400">none</span>
@@ -423,11 +429,12 @@ export function CommitmentTypesPage() {
               commitmentTypes={commitmentTypes}
               timezone={timezone}
               ownerEmail={ownerEmail}
+              aiMatches={aiMatches}
             />
-            {commitmentTypes.length > 0 && (
+            {commitmentTypes.some(t => t.mode === 'rules') && (
               <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-gray-600">Add a rule for entries titled exactly “{checking.summary}” to</span>
-                {commitmentTypes.map(t => (
+                {commitmentTypes.filter(t => t.mode === 'rules').map(t => (
                   <Button key={t.id} variant="secondary" onClick={() => addRuleFor(checking, t.id)}>
                     {t.name}
                   </Button>
@@ -445,58 +452,14 @@ export function CommitmentTypesPage() {
         size="wide"
       >
         {form && (
-          <form onSubmit={submit} className="space-y-5">
-            <div className="flex gap-4 flex-wrap">
-              <div className="flex-1 min-w-48">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                <input
-                  className={inputClass}
-                  value={form.name}
-                  onChange={e => setForm({ ...form, name: e.target.value })}
-                  placeholder="Customer calls"
-                  required
-                  autoFocus
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Colour</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {colors.map(color => (
-                    <button
-                      key={color}
-                      type="button"
-                      onClick={() => setForm({ ...form, color })}
-                      aria-label={`Use colour ${color}`}
-                      className={`w-7 h-7 rounded-lg border-2 transition-transform ${
-                        form.color === color ? 'scale-110 ring-2 ring-offset-1 ring-gray-400' : ''
-                      }`}
-                      style={{ backgroundColor: `${color}33`, borderColor: color }}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Rules</label>
-              <RuleList rules={form.rules} onChange={rules => setForm({ ...form, rules })} />
-            </div>
-
-            <RulePreview
-              draft={{ id: form.id, rules: form.rules }}
-              commitmentTypes={commitmentTypes}
-              events={events}
-              timezone={timezone}
-              ownerEmail={ownerEmail}
-            />
-
-            <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="secondary" onClick={() => setForm(null)}>Cancel</Button>
-              <Button type="submit" disabled={busy}>
-                {busy ? 'Saving…' : form.id ? 'Save changes' : 'Create'}
-              </Button>
-            </div>
-          </form>
+          <TypeEditor
+            key={form.id || 'new'}
+            initial={form}
+            colors={colors}
+            commitmentTypes={commitmentTypes}
+            onSave={save}
+            onCancel={() => setForm(null)}
+          />
         )}
       </Modal>
     </div>

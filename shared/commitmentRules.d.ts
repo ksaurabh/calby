@@ -27,12 +27,15 @@ export interface RuleEvent {
 
 export interface RuleType {
   id: string;
+  mode?: 'rules' | 'ai';
   rules?: CommitmentRule[];
 }
 
 export interface RuleContext {
   timezone: string;
   ownerEmail: string;
+  /** For "ai" types: type id -> ids of the entries the model said match. */
+  aiMatches?: Map<string, Set<string>>;
 }
 
 export interface EventFacts {
@@ -70,6 +73,7 @@ export function defaultValue(kind: ValueKind | null): RuleCondition['value'];
 export function sanitizeRules(rules: unknown): CommitmentRule[];
 export function eventFacts(event: RuleEvent, context: RuleContext): EventFacts;
 export function conditionHolds(condition: RuleCondition, facts: EventFacts): boolean;
+export function typeMatch(type: RuleType, event: RuleEvent, facts: EventFacts, context: RuleContext): number | null;
 export function classifyEvents(
   events: RuleEvent[],
   types: RuleType[],

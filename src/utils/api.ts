@@ -19,6 +19,7 @@ import type {
   CalendarStatus,
   Colleague,
   ChatMessage,
+  CommitmentRule,
   CommitmentType,
   CommitmentTypeInput,
   EventType,
@@ -81,15 +82,18 @@ export const api = {
     request<{ connected: boolean }>('/api/calendar/connect', { method: 'DELETE' }),
 
   // The owner's own calendar, labelled by commitment type
-  calendarEvents: () =>
+  calendarEvents: (window?: { back: number; forward: number }) =>
     request<{
       events: CalendarEvent[];
       commitmentTypes: CommitmentType[];
+      /** "Let AI decide" types: type id -> ids of matching entries. */
+      aiMatches: Record<string, string[]>;
+      aiErrors: string[];
       timezone: string;
       ownerEmail: string;
       from: string;
       to: string;
-    }>('/api/calendar/events'),
+    }>(`/api/calendar/events${window ? `?back=${window.back}&forward=${window.forward}` : ''}`),
 
   askCalendar: (question: string, history: ChatMessage[]) =>
     request<{ answer: string; eventsConsidered: number; timezone: string }>('/api/calendar/ask', {
@@ -124,6 +128,18 @@ export const api = {
     request<CommitmentType>(`/api/commitment-types/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data),
+    }),
+
+  translateRules: (description: string) =>
+    request<{ rules: CommitmentRule[]; unsupported: string }>('/api/commitment-types/translate', {
+      method: 'POST',
+      body: JSON.stringify({ description }),
+    }),
+
+  aiPreview: (description: string, window: { back: number; forward: number }) =>
+    request<{ matchedIds: string[]; error: string | null }>('/api/commitment-types/ai-preview', {
+      method: 'POST',
+      body: JSON.stringify({ description, ...window }),
     }),
 
   reorderCommitmentTypes: (ids: string[]) =>
