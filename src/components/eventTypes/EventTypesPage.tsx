@@ -43,6 +43,8 @@ export function EventTypesPage() {
   const [zoomConnected, setZoomConnected] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<EventType | null>(null);
+  // Cloning: the form starts from this event type but saves as a new one.
+  const [cloneOf, setCloneOf] = useState<EventType | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +105,19 @@ export function EventTypesPage() {
   const closeForm = () => {
     setShowForm(false);
     setEditing(null);
+    setCloneOf(null);
+  };
+
+  const startClone = (eventType: EventType) => {
+    setEditing(null);
+    setCloneOf({
+      ...eventType,
+      name: `${eventType.name} (copy)`,
+      externalName: eventType.externalName && eventType.externalName !== eventType.name
+        ? eventType.externalName
+        : '',
+    });
+    setShowForm(true);
   };
 
   const handleSubmit = async (values: {
@@ -151,7 +166,7 @@ export function EventTypesPage() {
             time on your calendar.
           </p>
         </div>
-        <Button onClick={() => { setEditing(null); setShowForm(true); }} disabled={!calendar?.connected}>
+        <Button onClick={() => { setEditing(null); setCloneOf(null); setShowForm(true); }} disabled={!calendar?.connected}>
           + New event type
         </Button>
       </div>
@@ -257,7 +272,8 @@ export function EventTypesPage() {
                   <Button variant="ghost" onClick={() => navigate(`/preview/${eventType.id}`)}>
                     Preview slots
                   </Button>
-                  <Button variant="ghost" onClick={() => { setEditing(eventType); setShowForm(true); }}>Edit</Button>
+                  <Button variant="ghost" onClick={() => { setCloneOf(null); setEditing(eventType); setShowForm(true); }}>Edit</Button>
+                  <Button variant="ghost" onClick={() => startClone(eventType)}>Clone</Button>
                   <Button variant="ghost" onClick={() => toggleActive(eventType)}>
                     {eventType.active ? 'Pause' : 'Resume'}
                   </Button>
@@ -293,10 +309,12 @@ export function EventTypesPage() {
       <Modal
         isOpen={showForm}
         onClose={closeForm}
-        title={editing ? 'Edit event type' : 'New event type'}
+        title={editing ? 'Edit event type' : cloneOf ? `Clone “${cloneOf.name.replace(/ \(copy\)$/, '')}”` : 'New event type'}
       >
         <EventTypeForm
-          eventType={editing || undefined}
+          key={editing?.id || (cloneOf ? `clone-${cloneOf.id}` : 'new')}
+          eventType={editing || cloneOf || undefined}
+          asNew={!editing}
           commitmentTypes={commitmentTypes}
           colleagues={colleagues}
           zoomConnected={zoomConnected}

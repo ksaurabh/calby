@@ -5,6 +5,8 @@ import { Button } from '../common';
 
 interface EventTypeFormProps {
   eventType?: EventType;
+  /** Prefill from eventType but create a new one (cloning). */
+  asNew?: boolean;
   commitmentTypes: CommitmentType[];
   colleagues: Colleague[];
   zoomConnected: boolean;
@@ -30,7 +32,7 @@ const EXAMPLES = [
   'Half hour syncs, mornings, no Fridays, 15 minute gap between calls',
 ];
 
-export function EventTypeForm({ eventType, commitmentTypes, colleagues, zoomConnected, onSubmit, onCancel }: EventTypeFormProps) {
+export function EventTypeForm({ eventType, asNew = false, commitmentTypes, colleagues, zoomConnected, onSubmit, onCancel }: EventTypeFormProps) {
   const [name, setName] = useState(eventType?.name || '');
   const [externalName, setExternalName] = useState(eventType?.externalName || '');
   const [description, setDescription] = useState(eventType?.description || '');
@@ -236,7 +238,7 @@ export function EventTypeForm({ eventType, commitmentTypes, colleagues, zoomConn
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
         <Button type="submit" disabled={busy}>
-          {busy ? 'Reading your guidance…' : eventType ? 'Save changes' : 'Create event type'}
+          {busy ? 'Reading your guidance…' : eventType && !asNew ? 'Save changes' : 'Create event type'}
         </Button>
       </div>
     </form>
