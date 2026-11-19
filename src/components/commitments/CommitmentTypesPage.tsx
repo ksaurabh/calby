@@ -69,6 +69,8 @@ export function CommitmentTypesPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [timezone, setTimezone] = useState('UTC');
   const [ownerEmail, setOwnerEmail] = useState('');
+  const [loadedAt, setLoadedAt] = useState(0);
+  const [tab, setTab] = useState<'upcoming' | 'past'>('upcoming');
   const [aiMatches, setAiMatches] = useState<Map<string, Set<string>>>(new Map());
   const [aiErrors, setAiErrors] = useState<string[]>([]);
   const [calendarError, setCalendarError] = useState<string | null>(null);
@@ -94,6 +96,7 @@ export function CommitmentTypesPage() {
       setEvents(data.events);
       setTimezone(data.timezone);
       setOwnerEmail(data.ownerEmail);
+      setLoadedAt(Date.now());
       setAiMatches(new Map(Object.entries(data.aiMatches || {}).map(([id, ids]) => [id, new Set(ids)])));
       setAiErrors(data.aiErrors || []);
       setCalendarError(null);
@@ -138,9 +141,17 @@ export function CommitmentTypesPage() {
     return c;
   }, [mapping]);
 
+  // An entry is past once it has ended; one in progress is still upcoming.
+  const isPast = useCallback((e: CalendarEvent) => Date.parse(e.end) <= loadedAt, [loadedAt]);
+  const tabCounts = useMemo(() => {
+    const past = events.filter(isPast).length;
+    return { past, upcoming: events.length - past };
+  }, [events, isPast]);
+
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return labelled
+      .filter(e => (tab === 'past' ? isPast(e) : !isPast(e)))
       .filter(e => {
         if (!filter) return true;
         if (filter === UNMATCHED) return !e.commitmentTypeId;
@@ -152,8 +163,9 @@ export function CommitmentTypesPage() {
         (e.organizer?.email || '').toLowerCase().includes(q) ||
         (e.attendees || []).some(a => a.email.toLowerCase().includes(q))
       )
-      .sort((a, b) => a.start.localeCompare(b.start));
-  }, [labelled, filter, search]);
+      // Upcoming soonest first; past most recent first.
+      .sort((a, b) => (tab === 'past' ? -1 : 1) * a.start.localeCompare(b.start));
+  }, [labelled, filter, search, tab, isPast]);
 
   const typeById = (id: string | null | undefined) => commitmentTypes.find(t => t.id === id);
 
@@ -376,6 +388,24 @@ export function CommitmentTypesPage() {
             />
           ) : (
             <>
+              <div className="flex gap-1 border-b border-gray-200 mb-3" role="tablist">
+                {(['upcoming', 'past'] as const).map(t => (
+                  <button
+                    key={t}
+                    role="tab"
+                    aria-selected={tab === t}
+                    onClick={() => setTab(t)}
+                    className={`px-3 py-2 text-sm -mb-px border-b-2 ${
+                      tab === t
+                        ? 'border-blue-600 text-blue-700 font-medium'
+                        : 'border-transparent text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    {t === 'upcoming' ? 'Upcoming Events' : 'Past Events'}{' '}
+                    <span className="text-gray-400 font-normal">({tabCounts[t]})</span>
+                  </button>
+                ))}
+              </div>
               <div className="flex flex-wrap gap-2 mb-3">
                 <input
                   className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm outline-none focus:border-blue-500 flex-1 min-w-48"
