@@ -428,34 +428,139 @@ async function zoomToken({ accountId, clientId, clientSecret }) {
   return data.access_token;
 }
 
-async function zoomGet(creds, path, attempt = 1) {
+async function zoomGet(creds, path) {
+  return zoomRequest(creds, path);
+}
+
+// One Zoom API call, with a token refresh on 401 and backoff on 429/5xx.
+// `scopeHint` names the scope to add when Zoom says one is missing.
+async function zoomRequest(creds, path, { method = 'GET', body, scopeHint } = {}, attempt = 1) {
   const token = await zoomToken(creds);
-  const res = await fetch(ZOOM_API + path, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetch(ZOOM_API + path, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
   const text = await res.text().catch(() => '');
   let data = null;
   try { data = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
   if (res.ok && data) return data;
   if (res.status === 401 && attempt === 1) {
     zoomTokens.delete(creds.clientId); // expired early; get a fresh one once
-    return zoomGet(creds, path, attempt + 1);
+    return zoomRequest(creds, path, { method, body, scopeHint }, attempt + 1);
   }
   if ((res.status === 429 || res.status >= 500) && attempt < ZOOM_MAX_ATTEMPTS) {
     const hinted = Number(res.headers.get('retry-after')) * 1000;
     await sleep(Number.isFinite(hinted) && hinted > 0 ? Math.min(hinted, 30_000) : 1000 * 2 ** (attempt - 1));
-    return zoomGet(creds, path, attempt + 1);
+    return zoomRequest(creds, path, { method, body, scopeHint }, attempt + 1);
   }
   const message = data?.message || snippet(text) || `HTTP ${res.status}`;
   if (res.status === 404) {
-    throw new Error(path.startsWith('/users/')
+    const err = new Error(path.startsWith('/users/')
       ? `Zoom has no user ${creds.userEmail} in that account (${message}).`
       : `Zoom: ${message}`);
+    err.status = 404;
+    throw err;
   }
-  if (res.status === 400 && /scope/i.test(message)) {
-    throw new Error(`The Zoom app is missing a scope — add "View all user recordings" (cloud_recording:read:list_user_recordings:admin). Zoom said: ${message}`);
+  if ((res.status === 400 || res.status === 403) && /scope/i.test(message)) {
+    throw new Error(`The Zoom app is missing a scope — add ${scopeHint || '"View all user recordings" (cloud_recording:read:list_user_recordings:admin)'}. Zoom said: ${message}`);
   }
   const err = new Error(`Zoom ${res.status}: ${message}`);
+  err.status = res.status;
   err.badKey = res.status === 401;
   throw err;
+}
+
+// ---------------------------------------------------------------------------
+// Zoom meetings for bookings
+// ---------------------------------------------------------------------------
+const MEETING_SCOPES = {
+  create: '"Create a meeting for a user" (meeting:write:meeting:admin)',
+  update: '"Update a meeting" (meeting:update:meeting:admin)',
+  delete: '"Delete a meeting" (meeting:delete:meeting:admin)',
+};
+
+// Zoom wants local wall-clock time plus the zone name.
+const zoomLocalTime = (date, timeZone) => {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(date).map(p => [p.type, p.value])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+};
+
+/** A scheduled Zoom meeting on the user's account; returns what an invite needs. */
+export async function zoomCreateMeeting(creds, { topic, start, durationMinutes, timeZone, agenda }) {
+  const m = await zoomRequest(creds, `/users/${encodeURIComponent(creds.userEmail)}/meetings`, {
+    method: 'POST',
+    scopeHint: MEETING_SCOPES.create,
+    body: {
+      topic: String(topic).slice(0, 200),
+      type: 2, // scheduled
+      start_time: zoomLocalTime(start, timeZone),
+      timezone: timeZone,
+      duration: durationMinutes,
+      agenda: agenda ? String(agenda).slice(0, 2000) : undefined,
+      settings: { join_before_host: true, waiting_room: false },
+    },
+  });
+  return {
+    id: String(m.id),
+    joinUrl: m.join_url,
+    passcode: m.password || '',
+    // The numeric passcode is the one phones can dial.
+    phonePasscode: m.h323_password || m.pstn_password || '',
+    dialIn: (m.settings?.global_dial_in_numbers || []).slice(0, 4).map(n => ({
+      number: n.number,
+      where: [n.city, n.country_name].filter(Boolean).join(', '),
+    })),
+  };
+}
+
+export async function zoomRescheduleMeeting(creds, id, { start, durationMinutes, timeZone }) {
+  await zoomRequest(creds, `/meetings/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    scopeHint: MEETING_SCOPES.update,
+    body: { start_time: zoomLocalTime(start, timeZone), timezone: timeZone, duration: durationMinutes },
+  });
+}
+
+export async function zoomDeleteMeeting(creds, id) {
+  try {
+    await zoomRequest(creds, `/meetings/${encodeURIComponent(id)}`, { method: 'DELETE', scopeHint: MEETING_SCOPES.delete });
+  } catch (err) {
+    if (err.status !== 404) throw err; // already gone
+  }
+}
+
+/** The join details as they appear in the invite. */
+export function zoomInviteText(meeting) {
+  const spacedId = meeting.id.replace(/^(\d{3})(\d{3,4})(\d{4})$/, '$1 $2 $3');
+  const lines = [
+    'Join Zoom Meeting',
+    meeting.joinUrl,
+    '',
+    `Meeting ID: ${spacedId}`,
+    meeting.passcode ? `Passcode: ${meeting.passcode}` : null,
+  ];
+  if (meeting.dialIn.length) {
+    const tap = meeting.dialIn[0].number.replace(/\s/g, '');
+    lines.push(
+      '',
+      'One tap mobile',
+      `${tap},,${meeting.id}#${meeting.phonePasscode ? `,,,,*${meeting.phonePasscode}#` : ''}`,
+      '',
+      'Dial by your location',
+      ...meeting.dialIn.map(d => `  ${d.number}${d.where ? ` (${d.where})` : ''}`),
+      meeting.phonePasscode ? `Meeting ID: ${spacedId} · Passcode: ${meeting.phonePasscode}` : `Meeting ID: ${spacedId}`,
+    );
+  }
+  return lines.filter(l => l !== null).join('\n');
 }
 
 const zoomDate = d => d.toISOString().slice(0, 10);

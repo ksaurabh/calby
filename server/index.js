@@ -64,8 +64,12 @@ import {
   gongCalls,
   gongProbe,
   matchZoomRecordings,
+  zoomCreateMeeting,
+  zoomDeleteMeeting,
+  zoomInviteText,
   zoomProbe,
   zoomRecordings,
+  zoomRescheduleMeeting,
 } from './recordings.js';
 import {
   checkAssistant,
@@ -511,8 +515,9 @@ function rescheduleUrl(token) {
 }
 
 // The invite body the guest and host both see in the calendar event.
-function eventDescription({ eventTypeName, name, email, notes, manageToken }) {
+function eventDescription({ eventTypeName, name, email, notes, manageToken, zoomText }) {
   return [
+    zoomText ? `${zoomText}\n` : '',
     `${eventTypeName} booked via Calby by ${name} <${email}>.`,
     notes ? `\nNotes:\n${notes}` : '',
     '\nNeed to change this meeting?',
@@ -644,7 +649,24 @@ function publicEventType(eventType, ownerName, durationMinutes) {
       : [eventType.rules.durationMinutes],
     timezone: eventType.rules.timezone,
     availabilitySummary: eventType.rules.summary || '',
+    location: eventType.meetingLocation === 'zoom' ? 'zoom' : null,
   };
+}
+
+// Where an event type's meetings happen: "zoom" makes a Zoom meeting per booking.
+const MEETING_LOCATIONS = ['none', 'zoom'];
+
+// Zoom needs the owner's Zoom credentials (Settings), so choosing it without
+// them is refused up front rather than discovered at booking time.
+function meetingLocationFor(email, value, current = 'none') {
+  if (value === undefined) return current;
+  if (!MEETING_LOCATIONS.includes(value)) return current;
+  if (value === 'zoom' && !recordingCredsFor(email).zoom) {
+    const err = new Error('Connect Zoom on the Settings page first — Calby uses it to create the meeting for each booking.');
+    err.status = 400;
+    throw err;
+  }
+  return value;
 }
 
 // The calendar credentials stored on a user record, if they connected one.
@@ -1504,6 +1526,12 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
   const guidance = req.body.guidance?.trim() || '';
   if (!name) return res.status(400).json({ error: 'A name is required' });
   if (!guidance) return res.status(400).json({ error: 'Guidance is required — describe when people may book you' });
+  let meetingLocation;
+  try {
+    meetingLocation = meetingLocationFor(req.user.email, req.body.meetingLocation);
+  } catch (err) {
+    return res.status(err.status).json({ error: err.message });
+  }
 
   const key = anthropicKeyFor(req.user.email);
   const { rules, source } = await interpretGuidance(guidance, {
@@ -1523,6 +1551,7 @@ app.post('/api/event-types', requireAuth, async (req, res) => {
     bookOverCommitmentTypeIds: ownCommitmentTypeIds(req.user.email, req.body.bookOverCommitmentTypeIds),
     // Colleagues who must also be free for a slot to be offered.
     colleagueEmails: ownColleagueEmails(req.user.email, req.body.colleagueEmails),
+    meetingLocation,
     description: req.body.description?.trim() || '',
     guidance,
     slug: generatePublicSlug(),
@@ -1547,6 +1576,12 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
 
   const current = eventTypes[index];
   const guidance = req.body.guidance?.trim() ?? current.guidance;
+  let meetingLocation;
+  try {
+    meetingLocation = meetingLocationFor(req.user.email, req.body.meetingLocation, current.meetingLocation || 'none');
+  } catch (err) {
+    return res.status(err.status).json({ error: err.message });
+  }
   const now = new Date().toISOString();
 
   // Re-read the guidance only when it actually changed — one model call per edit.
@@ -1572,6 +1607,7 @@ app.put('/api/event-types/:id', requireAuth, async (req, res) => {
     colleagueEmails: req.body.colleagueEmails
       ? ownColleagueEmails(req.user.email, req.body.colleagueEmails)
       : current.colleagueEmails || [],
+    meetingLocation,
     description: req.body.description?.trim() ?? current.description,
     guidance,
     active: typeof req.body.active === 'boolean' ? req.body.active : current.active,
@@ -1685,6 +1721,8 @@ async function previewAvailability(req, res, { duration, guidance, refresh }) {
     // Colour-code the calendar by commitment type.
     const commitmentTypes = getCommitmentTypes(req.user.email);
     const assignments = await labelEvents(req.user.email, events, target.rules.timezone, commitmentTypes);
+    if ((availability.colleagues || []).length) progress('Reading colleagues\u2019 calendar entries');
+    const colleagues = await colleagueCalendars(target, availability, { fresh: !!refresh });
     progress('Done');
     const labelled = events.map(e => ({ ...e, commitmentTypeId: assignments.get(e.id) || null }));
 
@@ -1695,6 +1733,7 @@ async function previewAvailability(req, res, { duration, guidance, refresh }) {
       // True when these slots come from unsaved guidance.
       draft,
       events: labelled,
+      colleagues,
       commitmentTypes,
       durationMinutes,
       // What the commitment-aware review did to the candidate slots.
@@ -2040,6 +2079,29 @@ async function colleagueEntriesAsOwnerSees(ownerEmail, token, emails, from, to, 
   }));
 }
 
+// Each colleague an event type checks, for the owner's previews: their busy
+// time (what decides the slots) and their entries where the owner can see
+// them (null when they share only free/busy).
+async function colleagueCalendars(eventType, availability, { fresh = false } = {}) {
+  const checked = availability.colleagues || [];
+  if (!checked.length) return [];
+  const entries = await colleagueEntriesAsOwnerSees(
+    eventType.ownerEmail,
+    availability.token,
+    checked.map(c => c.email),
+    new Date(),
+    new Date(Date.now() + eventType.rules.horizonWeeks * 7 * 86400_000),
+    { fresh },
+  );
+  return checked.map(c => ({
+    email: c.email,
+    name: c.name,
+    error: c.error || null,
+    busy: (c.busy || []).map(b => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() })),
+    events: entries.find(x => x.email === c.email)?.events ?? null,
+  }));
+}
+
 // Quick preview: exactly what the public link offers (same rules, the same
 // cached-review mode, never a model call), next to your own calendar entries.
 // It reads the calendar from the recent snapshot, so it's fast; `refresh=1`
@@ -2057,28 +2119,9 @@ app.get('/api/event-types/:id/quick-preview', requireAuth, async (req, res) => {
     });
     const owner = findUser(eventType.ownerEmail);
     const assignments = availability.assignments || new Map();
-    const checked = availability.colleagues || [];
-    const entries = checked.length
-      ? await colleagueEntriesAsOwnerSees(
-          eventType.ownerEmail,
-          availability.token,
-          checked.map(c => c.email),
-          new Date(),
-          new Date(Date.now() + eventType.rules.horizonWeeks * 7 * 86400_000),
-          { fresh: req.query.refresh === '1' },
-        )
-      : [];
     res.json({
       eventType: publicEventType(eventType, owner?.name || 'the host', durationMinutes),
-      // Each colleague also checked: their busy time (what decides the slots),
-      // and their entries where you can see them (null when you can't).
-      colleagues: checked.map(c => ({
-        email: c.email,
-        name: c.name,
-        error: c.error || null,
-        busy: (c.busy || []).map(b => ({ start: new Date(b.start).toISOString(), end: new Date(b.end).toISOString() })),
-        events: entries.find(x => x.email === c.email)?.events ?? null,
-      })),
+      colleagues: await colleagueCalendars(eventType, availability, { fresh: req.query.refresh === '1' }),
       active: !!eventType.active,
       slug: eventType.slug,
       days: availability.days,
@@ -2147,6 +2190,32 @@ app.post('/api/book/:slug', async (req, res) => {
 
     const manageToken = generateManageToken();
     const publicName = externalNameOf(eventType);
+
+    // A Zoom meeting first, so its join details go out with the invite. If
+    // Zoom fails the booking still stands — the guest keeps their time — and
+    // the failure is recorded on the booking for the host.
+    let zoom = null;
+    let zoomError = null;
+    if (eventType.meetingLocation === 'zoom') {
+      const creds = recordingCredsFor(eventType.ownerEmail).zoom;
+      if (!creds) {
+        zoomError = 'Zoom is not connected on the Settings page.';
+      } else {
+        try {
+          zoom = await zoomCreateMeeting(creds, {
+            topic: `${publicName} — ${name}`,
+            start: startDate,
+            durationMinutes,
+            timeZone: eventType.rules.timezone,
+            agenda: notes,
+          });
+        } catch (err) {
+          zoomError = err.message;
+        }
+      }
+      if (zoomError) console.error(`[booking] Zoom meeting for ${eventType.ownerEmail} failed:`, zoomError);
+    }
+
     const event = await createEvent(token, {
       summary: `${publicName} — ${name}`,
       description: eventDescription({
@@ -2155,7 +2224,9 @@ app.post('/api/book/:slug', async (req, res) => {
         email,
         notes,
         manageToken,
+        zoomText: zoom ? zoomInviteText(zoom) : null,
       }),
+      location: zoom?.joinUrl,
       start: startDate,
       end: endDate,
       timeZone: eventType.rules.timezone,
@@ -2179,6 +2250,8 @@ app.post('/api/book/:slug', async (req, res) => {
       timezone: eventType.rules.timezone,
       googleEventId: event.id || null,
       googleEventLink: event.htmlLink || null,
+      ...(zoom ? { zoomMeetingId: zoom.id, zoomJoinUrl: zoom.joinUrl } : {}),
+      ...(zoomError ? { zoomError } : {}),
       status: 'confirmed',
       createdAt: new Date().toISOString(),
     };
@@ -2290,6 +2363,15 @@ app.post('/api/booking/:token/cancel', async (req, res) => {
     }
   }
 
+  // The Zoom meeting goes with it; a failure here doesn't block the cancel.
+  if (booking.zoomMeetingId) {
+    const creds = recordingCredsFor(booking.ownerEmail).zoom;
+    if (creds) {
+      await zoomDeleteMeeting(creds, booking.zoomMeetingId)
+        .catch(err => console.error('[booking] Zoom delete failed:', err.message));
+    }
+  }
+
   bookings[index] = {
     ...booking,
     status: 'cancelled',
@@ -2341,6 +2423,17 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
         end: endDate,
         timeZone: eventType.rules.timezone,
       });
+    }
+    // Same Zoom link, new time.
+    if (booking.zoomMeetingId) {
+      const creds = recordingCredsFor(booking.ownerEmail).zoom;
+      if (creds) {
+        await zoomRescheduleMeeting(creds, booking.zoomMeetingId, {
+          start: startDate,
+          durationMinutes,
+          timeZone: eventType.rules.timezone,
+        }).catch(err => console.error('[booking] Zoom reschedule failed:', err.message));
+      }
     }
 
     bookings[index] = {

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import type { CalendarEvent, CommitmentType, SlotDay } from '../../types';
+import type { CalendarEvent, ColleagueCalendar, CommitmentType, SlotDay } from '../../types';
 import {
   dateKeyInZone,
   dateKeyRange,
@@ -68,6 +68,12 @@ interface AvailabilityCalendarProps {
   selectedTime?: string | null;
   /** Shown in a small popover right at the selected time (e.g. actions). */
   selectionActions?: ReactNode;
+  /**
+   * Colleagues the event type also checks. In paired mode each gets a column
+   * between a day's schedule and its open slots: their entries where you can
+   * see them, striped busy time where you can't.
+   */
+  colleagues?: ColleagueCalendar[];
 }
 
 const HOUR_HEIGHT = 52; // px per hour
@@ -121,6 +127,7 @@ export function AvailabilityCalendar({
   snapMinutes = 30,
   selectedTime = null,
   selectionActions,
+  colleagues = [],
 }: AvailabilityCalendarProps) {
   const tz = calendarWindow.timezone;
   const [ownOffset, setOwnOffset] = useState(0);
@@ -174,6 +181,34 @@ export function AvailabilityCalendar({
     return map;
   }, [events]);
 
+  // Each colleague's timed items (visible entries, then busy time with no
+  // visible entry behind it), split per local day like your own meetings.
+  const colleagueItems = useMemo(() => colleagues.map(c => {
+    const entries = (c.events || []).filter(e => !e.allDay);
+    const covered = (b: { start: string; end: string }) =>
+      entries.some(e => Date.parse(e.start) <= Date.parse(b.start) && Date.parse(e.end) >= Date.parse(b.end));
+    const items = [
+      ...entries.map(e => ({ id: e.id, start: e.start, end: e.end, label: e.summary || 'Busy', busyOnly: !e.summary })),
+      ...c.busy.filter(b => !covered(b)).map((b, i) => ({ id: `busy-${i}`, start: b.start, end: b.end, label: 'Busy', busyOnly: true })),
+    ];
+    const byDate = new Map<string, typeof items>();
+    for (const item of items) {
+      const key = dateKeyInZone(item.start, tz);
+      byDate.set(key, [...(byDate.get(key) || []), item]);
+      const endKey = dateKeyInZone(item.end, tz);
+      if (endKey !== key) byDate.set(endKey, [...(byDate.get(endKey) || []), item]);
+    }
+    const allDay = new Map<string, string[]>();
+    for (const e of c.events || []) {
+      if (!e.allDay) continue;
+      const key = e.start.slice(0, 10);
+      allDay.set(key, [...(allDay.get(key) || []), e.summary || 'Busy']);
+    }
+    return { c, byDate, allDay };
+  }), [colleagues, tz]);
+  const showColleagues = paired && colleagues.length > 0;
+  const firstName = (c: ColleagueCalendar) => (c.name || c.email).split(/[\s@]/)[0];
+
   const dateKeys = dateKeyRange(tz, pageOffset * daysPerPage, daysPerPage);
   const todayKey = todayKeyInZone(tz);
   const lastPage = Math.max(0, Math.ceil((calendarWindow.weeks * 7) / daysPerPage) - 1);
@@ -184,7 +219,8 @@ export function AvailabilityCalendar({
     let from = calendarWindow.startMinute;
     let to = calendarWindow.endMinute;
     for (const key of dateKeys) {
-      for (const event of timedByDate.get(key) || []) {
+      const colleagueTimed = showColleagues ? colleagueItems.flatMap(x => x.byDate.get(key) || []) : [];
+      for (const event of [...(timedByDate.get(key) || []), ...colleagueTimed]) {
         const startsToday = dateKeyInZone(event.start, tz) === key;
         const endsToday = dateKeyInZone(event.end, tz) === key;
         from = Math.min(from, startsToday ? minutesInZone(event.start, tz) : 0);
@@ -195,7 +231,7 @@ export function AvailabilityCalendar({
       fromMinute: Math.max(0, Math.floor(from / 60) * 60),
       toMinute: Math.min(24 * 60, Math.ceil(to / 60) * 60),
     };
-  }, [dateKeys, timedByDate, calendarWindow.startMinute, calendarWindow.endMinute, tz]);
+  }, [dateKeys, timedByDate, colleagueItems, showColleagues, calendarWindow.startMinute, calendarWindow.endMinute, tz]);
 
   const totalMinutes = Math.max(60, toMinute - fromMinute);
   const gridHeight = (totalMinutes / 60) * HOUR_HEIGHT;
@@ -215,9 +251,12 @@ export function AvailabilityCalendar({
   };
 
   // What each rendered column is: a day, and which layer it shows.
-  const columns: { key: string; kind: 'both' | 'events' | 'slots'; first: boolean }[] = paired
+  const columns: { key: string; kind: 'both' | 'events' | 'slots' | 'colleague'; first: boolean; colleague?: number }[] = paired
     ? dateKeys.flatMap(key => [
         { key, kind: 'events' as const, first: true },
+        ...(showColleagues
+          ? colleagues.map((_, colleague) => ({ key, kind: 'colleague' as const, first: false, colleague }))
+          : []),
         { key, kind: 'slots' as const, first: false },
       ])
     : dateKeys.map(key => ({ key, kind: 'both' as const, first: true }));
@@ -325,6 +364,12 @@ export function AvailabilityCalendar({
           />
           {commitmentTypes.length ? 'No commitment type' : 'Existing meeting'}
         </span>
+        {showColleagues && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 rounded border bg-slate-200 border-slate-400" />
+            Colleague busy
+          </span>
+        )}
       </div>
       )}
 
@@ -342,7 +387,7 @@ export function AvailabilityCalendar({
                   <div
                     key={key}
                     className={`px-2 pt-2 ${paired ? 'pb-0' : 'pb-2'} text-center border-l-2 border-gray-200 ${isToday ? 'bg-blue-50' : ''}`}
-                    style={{ flex: paired ? 2 : 1 }}
+                    style={{ flex: paired ? 2 + (showColleagues ? colleagues.length : 0) : 1 }}
                   >
                     <div className={`text-xs font-medium ${isToday ? 'text-blue-700' : 'text-gray-700'}`}>{weekday}</div>
                     <div className="text-xs text-gray-500">{day}</div>
@@ -360,10 +405,22 @@ export function AvailabilityCalendar({
                     className={`flex-1 px-1 pb-1.5 text-center text-[10px] ${
                       column.first ? 'border-l-2' : 'border-l'
                     } border-gray-200 ${column.key === todayKey ? 'bg-blue-50' : ''} ${
-                      column.kind === 'slots' ? 'text-emerald-700' : 'text-gray-500'
+                      column.kind === 'slots' ? 'text-emerald-700' : column.kind === 'colleague' ? 'text-slate-600 truncate' : 'text-gray-500'
                     }`}
+                    title={column.kind === 'colleague'
+                      ? (() => {
+                          const c = colleagues[column.colleague!];
+                          return c.error
+                            ? `${c.name}: couldn't read their calendar (${c.error})`
+                            : `${c.name}${c.events === null ? ' — shares only free/busy with you' : ''}`;
+                        })()
+                      : undefined}
                   >
-                    {column.kind === 'slots' ? 'Open slots' : 'Schedule'}
+                    {column.kind === 'slots'
+                      ? 'Open slots'
+                      : column.kind === 'colleague'
+                        ? firstName(colleagues[column.colleague!])
+                        : 'Schedule'}
                   </div>
                 ))}
               </div>
@@ -371,7 +428,8 @@ export function AvailabilityCalendar({
           </div>
 
           {/* All-day row, only when something is there */}
-          {dateKeys.some(key => allDayByDate.get(key)?.length) && (
+          {dateKeys.some(key => allDayByDate.get(key)?.length ||
+            (showColleagues && colleagueItems.some(x => x.allDay.get(key)?.length))) && (
             <div className="flex border-b border-gray-200 bg-white">
               <div className="w-14 shrink-0 px-1 py-1 text-[10px] text-gray-400 text-right">all-day</div>
               {columns.map((column, index) => (
@@ -379,9 +437,14 @@ export function AvailabilityCalendar({
                   key={`${column.key}-${column.kind}-${index}`}
                   className={`flex-1 ${column.first ? 'border-l-2' : 'border-l'} border-gray-200 p-1 space-y-1`}
                 >
-                  {!hideEvents && column.kind !== 'slots' && (allDayByDate.get(column.key) || []).map(event => (
+                  {!hideEvents && (column.kind === 'events' || column.kind === 'both') && (allDayByDate.get(column.key) || []).map(event => (
                     <div key={event.id} className="text-[10px] truncate rounded bg-gray-200 text-gray-700 px-1 py-0.5">
                       {event.summary}
+                    </div>
+                  ))}
+                  {column.kind === 'colleague' && (colleagueItems[column.colleague!].allDay.get(column.key) || []).map((label, i) => (
+                    <div key={i} className="text-[10px] truncate rounded bg-slate-200 text-slate-700 px-1 py-0.5" title={label}>
+                      {label}
                     </div>
                   ))}
                 </div>
@@ -405,6 +468,40 @@ export function AvailabilityCalendar({
 
             {columns.map((column, index) => {
               const { key, kind } = column;
+              if (kind === 'colleague') {
+                const { c, byDate } = colleagueItems[column.colleague!];
+                return (
+                  <div key={`${key}-colleague-${column.colleague}`} className="flex-1 relative border-l border-gray-200 bg-slate-50/40">
+                    {hourMarks.map(minute => (
+                      <div key={minute} className="absolute left-0 right-0 border-t border-gray-100" style={{ top: yFor(minute) }} />
+                    ))}
+                    {c.error ? (
+                      <div className="absolute inset-x-0.5 top-1 text-[10px] text-amber-700" title={c.error}>Couldn’t read</div>
+                    ) : (byDate.get(key) || []).map(item => {
+                      const startsToday = dateKeyInZone(item.start, tz) === key;
+                      const endsToday = dateKeyInZone(item.end, tz) === key;
+                      const startMin = startsToday ? minutesInZone(item.start, tz) : 0;
+                      const endMin = endsToday ? minutesInZone(item.end, tz) : 24 * 60;
+                      const height = Math.max(14, ((endMin - startMin) / 60) * HOUR_HEIGHT);
+                      return (
+                        <div
+                          key={`${item.id}-${key}`}
+                          className={`absolute left-0.5 right-0.5 rounded border px-1 overflow-hidden ${
+                            item.busyOnly
+                              ? 'bg-[repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9_4px,#e2e8f0_4px,#e2e8f0_8px)] border-slate-300 text-slate-600'
+                              : 'bg-slate-200 border-slate-400 text-slate-800'
+                          }`}
+                          style={{ top: yFor(startMin), height }}
+                          title={`${c.name}: ${item.label} · ${minuteLabel(startMin)}–${minuteLabel(endMin)} — no slots are offered while ${firstName(c)} is busy`}
+                        >
+                          <div className="text-[10px] font-medium truncate">{item.label}</div>
+                          {height > 28 && <div className="text-[10px] opacity-75 truncate">{minuteLabel(startMin)}</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
               const { meetings, open } = blocksFor(key);
               const showMeetings = !hideEvents && kind !== 'slots';
               const showOpen = kind !== 'events';

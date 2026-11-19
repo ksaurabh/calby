@@ -246,12 +246,13 @@ export async function deleteEvent(token, eventId) {
 
 // Create the meeting and invite the person who booked. sendUpdates=all makes
 // Google email both parties.
-export async function createEvent(token, { summary, description, start, end, timeZone, attendee }) {
+export async function createEvent(token, { summary, description, location, start, end, timeZone, attendee }) {
   return calendarFetch(token, '/calendars/primary/events?sendUpdates=all', {
     method: 'POST',
     body: JSON.stringify({
       summary,
       description,
+      ...(location ? { location } : {}),
       start: { dateTime: start.toISOString(), timeZone },
       end: { dateTime: end.toISOString(), timeZone },
       attendees: attendee ? [{ email: attendee.email, displayName: attendee.name || undefined }] : [],

@@ -165,6 +165,9 @@ export function BookingPage({ slug }: { slug: string }) {
       <p className="text-sm text-gray-500">{eventType.ownerName}</p>
       <h1 className="text-xl font-bold text-gray-900 mt-1">{eventType.name}</h1>
       <div className="mt-3 text-sm text-gray-600">⏱ {durationLabel(activeDuration)}</div>
+      {eventType.location === 'zoom' && (
+        <div className="mt-1 text-sm text-gray-600">📹 Zoom — the link is in your calendar invite</div>
+      )}
       {step === 'details' && selected && (
         <div className="mt-2 text-sm text-blue-700 font-medium">
           🗓 {formatDateTime(selected, viewerTz)}

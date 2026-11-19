@@ -331,6 +331,8 @@ export interface EventType {
   bookOverCommitmentTypeIds: string[];
   /** Colleagues who must also be free for a slot to be offered. */
   colleagueEmails: string[];
+  /** "zoom" creates a Zoom meeting for each booking and puts it in the invite. */
+  meetingLocation?: MeetingLocation;
   rules: SchedulingRules;
   rulesSource: 'claude' | 'text';
   rulesUpdatedAt: string;
@@ -348,7 +350,10 @@ export interface EventTypeInput {
   timezone?: string;
   bookOverCommitmentTypeIds?: string[];
   colleagueEmails?: string[];
+  meetingLocation?: MeetingLocation;
 }
+
+export type MeetingLocation = 'none' | 'zoom';
 
 /** A colleague checked by an event type, as the quick preview shows them. */
 export interface ColleagueCalendar {
@@ -459,6 +464,8 @@ export interface PublicEventType {
   /** The host's timezone, offered as a shortcut in the timezone picker. */
   timezone: string;
   availabilitySummary: string;
+  /** "zoom" when the meeting happens on Zoom. */
+  location?: 'zoom' | null;
 }
 
 export interface Booking {

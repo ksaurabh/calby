@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CalendarEvent, CommitmentType, EventType, SchedulingRules, SlotDay } from '../../types';
+import type { CalendarEvent, ColleagueCalendar, CommitmentType, EventType, SchedulingRules, SlotDay } from '../../types';
 import { api, type GuidanceSuggestion } from '../../utils/api';
 import { formatDateTime } from '../../utils/format';
 import { navigate } from '../../utils/navigate';
@@ -15,6 +15,7 @@ interface Availability {
   draft: boolean;
   calendarFetchedAt: string;
   events: CalendarEvent[];
+  colleagues?: ColleagueCalendar[];
   commitmentTypes: CommitmentType[];
   durationMinutes: number;
   reviewNote: string | null;
@@ -400,6 +401,7 @@ export function PreviewSlotsPage({ eventTypeId }: { eventTypeId: string }) {
         <AvailabilityCalendar
           {...shared}
           events={availability.events}
+          colleagues={availability.colleagues}
           days={availability.days}
           commitmentTypes={availability.commitmentTypes}
           paired

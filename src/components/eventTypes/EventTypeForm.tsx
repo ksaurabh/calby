@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { Colleague, CommitmentType, EventType } from '../../types';
+import type { Colleague, CommitmentType, EventType, MeetingLocation } from '../../types';
 import { browserTimezone } from '../../utils/format';
 import { Button } from '../common';
 
@@ -7,6 +7,7 @@ interface EventTypeFormProps {
   eventType?: EventType;
   commitmentTypes: CommitmentType[];
   colleagues: Colleague[];
+  zoomConnected: boolean;
   onSubmit: (values: {
     name: string;
     externalName: string;
@@ -15,6 +16,7 @@ interface EventTypeFormProps {
     timezone: string;
     bookOverCommitmentTypeIds: string[];
     colleagueEmails: string[];
+    meetingLocation: MeetingLocation;
   }) => Promise<void>;
   onCancel: () => void;
 }
@@ -28,13 +30,14 @@ const EXAMPLES = [
   'Half hour syncs, mornings, no Fridays, 15 minute gap between calls',
 ];
 
-export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit, onCancel }: EventTypeFormProps) {
+export function EventTypeForm({ eventType, commitmentTypes, colleagues, zoomConnected, onSubmit, onCancel }: EventTypeFormProps) {
   const [name, setName] = useState(eventType?.name || '');
   const [externalName, setExternalName] = useState(eventType?.externalName || '');
   const [description, setDescription] = useState(eventType?.description || '');
   const [guidance, setGuidance] = useState(eventType?.guidance || '');
   const [bookOver, setBookOver] = useState<string[]>(eventType?.bookOverCommitmentTypeIds || []);
   const [withColleagues, setWithColleagues] = useState<string[]>(eventType?.colleagueEmails || []);
+  const [meetingLocation, setMeetingLocation] = useState<MeetingLocation>(eventType?.meetingLocation || 'none');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -52,6 +55,7 @@ export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit
         timezone: eventType?.rules.timezone || browserTimezone(),
         bookOverCommitmentTypeIds: bookOver,
         colleagueEmails: withColleagues,
+        meetingLocation,
       });
     } catch (err) {
       setError((err as Error).message);
@@ -103,6 +107,42 @@ export function EventTypeForm({ eventType, commitmentTypes, colleagues, onSubmit
           onChange={e => setDescription(e.target.value)}
           placeholder="A quick chat about what you're working on"
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Where</label>
+        <div className="flex gap-2">
+          {([
+            ['none', 'No location'],
+            ['zoom', 'Zoom'],
+          ] as [MeetingLocation, string][]).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setMeetingLocation(value)}
+              className={`px-3 py-1.5 rounded-lg border text-sm ${
+                meetingLocation === value
+                  ? 'border-blue-600 bg-blue-50 text-blue-800'
+                  : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              {value === 'zoom' && '📹 '}{label}
+            </button>
+          ))}
+        </div>
+        {meetingLocation === 'zoom' && (
+          zoomConnected ? (
+            <p className="text-xs text-gray-500 mt-1">
+              Each booking gets its own Zoom meeting on your account, and the invite carries the join
+              link, meeting ID, passcode and dial-in numbers. Rescheduling moves it; cancelling deletes it.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-700 mt-1">
+              Connect Zoom on the <a href="/settings" className="underline">Settings</a> page first —
+              Calby uses it to create each meeting.
+            </p>
+          )
+        )}
       </div>
 
       <div>

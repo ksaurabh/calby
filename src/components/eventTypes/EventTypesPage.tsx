@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { OneOffLinks } from './OneOffLinks';
-import type { CalendarStatus, Colleague, CommitmentType, EventType } from '../../types';
+import type { CalendarStatus, Colleague, CommitmentType, EventType, MeetingLocation } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
 import { Button, Modal } from '../common';
@@ -40,6 +40,7 @@ export function EventTypesPage() {
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
   const [colleagues, setColleagues] = useState<Colleague[]>([]);
+  const [zoomConnected, setZoomConnected] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<EventType | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -49,16 +50,18 @@ export function EventTypesPage() {
 
   const load = useCallback(async () => {
     try {
-      const [{ eventTypes }, status, commitments, team] = await Promise.all([
+      const [{ eventTypes }, status, commitments, team, integrations] = await Promise.all([
         api.listEventTypes(),
         api.calendarStatus(),
         api.listCommitmentTypes(),
         api.listColleagues(),
+        api.integrations().catch(() => null),
       ]);
       setEventTypes(eventTypes);
       setCalendar(status);
       setCommitmentTypes(commitments.commitmentTypes);
       setColleagues(team.colleagues);
+      setZoomConnected(!!integrations?.zoom.connected);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -110,6 +113,7 @@ export function EventTypesPage() {
     timezone: string;
     bookOverCommitmentTypeIds: string[];
     colleagueEmails: string[];
+    meetingLocation: MeetingLocation;
   }) => {
     if (editing) {
       await api.updateEventType(editing.id, values);
@@ -295,6 +299,7 @@ export function EventTypesPage() {
           eventType={editing || undefined}
           commitmentTypes={commitmentTypes}
           colleagues={colleagues}
+          zoomConnected={zoomConnected}
           onSubmit={handleSubmit}
           onCancel={closeForm}
         />
