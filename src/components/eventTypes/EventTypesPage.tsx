@@ -3,6 +3,7 @@ import { OneOffLinks } from './OneOffLinks';
 import type { CalendarStatus, Colleague, CommitmentType, EventType, MeetingLocation } from '../../types';
 import { api } from '../../utils/api';
 import { navigate } from '../../utils/navigate';
+import { useLinkFont } from '../../utils/preferences';
 import { Button, Modal } from '../common';
 import { EventTypeForm } from './EventTypeForm';
 
@@ -36,6 +37,7 @@ function rulesSummary(eventType: EventType) {
 }
 
 export function EventTypesPage() {
+  const linkFont = useLinkFont().className;
   const [eventTypes, setEventTypes] = useState<EventType[]>([]);
   const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
   const [commitmentTypes, setCommitmentTypes] = useState<CommitmentType[]>([]);
@@ -282,7 +284,7 @@ export function EventTypesPage() {
               </div>
 
               <div className="mt-4 flex items-center gap-2 border-t border-gray-100 pt-4">
-                <code className="flex-1 truncate font-sans text-xs bg-gray-50 rounded-lg px-3 py-2 text-gray-700">
+                <code className={`flex-1 truncate ${linkFont} text-xs bg-gray-50 rounded-lg px-3 py-2 text-gray-700`}>
                   {bookingUrl(eventType)}
                 </code>
                 <Button variant="secondary" onClick={() => copyLink(eventType)}>

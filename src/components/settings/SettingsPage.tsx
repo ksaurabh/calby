@@ -3,6 +3,8 @@ import { api } from '../../utils/api';
 import { useAuth } from '../../context/AuthContext';
 import { Button } from '../common';
 import { DailyCostChart } from './DailyCostChart';
+import { setLinkFont, useLinkFont } from '../../utils/preferences';
+import type { LinkFont } from '../../utils/preferences';
 import { RecordingIntegrations } from './RecordingIntegrations';
 import type { DailyCost } from './DailyCostChart';
 
@@ -62,6 +64,8 @@ export function SettingsPage() {
       </div>
 
       <RecordingIntegrations />
+
+      <DisplaySettings />
 
       {error && <div className="rounded-lg bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>}
 
@@ -203,6 +207,42 @@ export function SettingsPage() {
           </>
         )}
       </section>
+    </div>
+  );
+}
+
+function DisplaySettings() {
+  const { font } = useLinkFont();
+  const options: { value: LinkFont; label: string; className: string }[] = [
+    { value: 'sans', label: 'Sans-serif', className: 'font-sans' },
+    { value: 'mono', label: 'Monospace', className: 'font-mono' },
+  ];
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 className="font-medium text-gray-900">Display</h2>
+      <p className="text-sm text-gray-500 mt-1">Saved in this browser.</p>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <span className="text-sm text-gray-700 w-32">Booking link font</span>
+        <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="radiogroup">
+          {options.map(o => (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={font === o.value}
+              onClick={() => setLinkFont(o.value)}
+              className={`px-3 py-1.5 text-sm ${o.className} ${
+                font === o.value ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <code className={`text-xs bg-gray-50 rounded-lg px-3 py-1.5 text-gray-700 ${font === 'mono' ? 'font-mono' : 'font-sans'}`}>
+          {window.location.origin}/book/abc123
+        </code>
+      </div>
     </div>
   );
 }
