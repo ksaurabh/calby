@@ -107,7 +107,7 @@ export function OneOffLinks({ eventTypeId }: { eventTypeId: string }) {
               <span className="w-56 shrink-0 truncate text-gray-800 font-medium" title={link.description}>
                 {link.description || <span className="text-gray-400 font-normal italic">no description</span>}
               </span>
-              <code className={`flex-1 min-w-0 truncate bg-gray-50 rounded px-2 py-1 text-gray-700 ${link.state === 'open' ? '' : 'line-through'}`}>
+              <code className={`flex-1 min-w-0 truncate font-sans bg-gray-50 rounded px-2 py-1 text-gray-700 ${link.state === 'open' ? '' : 'line-through'}`}>
                 {linkUrl(link.slug)}
               </code>
               <span className="w-28 shrink-0 text-gray-500">
